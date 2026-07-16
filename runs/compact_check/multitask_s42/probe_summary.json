@@ -1,0 +1,9 @@
+{
+  "arm": "multitask",
+  "branch_a_macro_f1": 0.6434799477182523,
+  "probe_seed": 1234,
+  "seed": 42,
+  "test_tokens": 114,
+  "trunk_macro_f1": 0.40076991356190467,
+  "val_tokens": 110
+}

@@ -1,0 +1,44 @@
+===== train / tray_sum =====
+CONTEXT: This is a short task about three trays. Only the listed quantities are used.
+PROBLEM: Find how many pieces are on all trays.
+CONSTRAINT: Keep the order of the changes. Use every listed value.
+DATA: Tray one has 7 pieces, tray two has 3, and tray three has 4.
+REASONING: Step 1: Add 7 and 3 to get 10. Step 2: Add 4 to 10 to get 14.
+CONCLUSION: All trays hold 14 pieces.
+FINAL: The answer is 14.
+
+===== train / shelf_remainder =====
+CONTEXT: We solve a small task about books on a shelf.
+PROBLEM: Find how many books remain.
+CONSTRAINT: Return one whole number.
+DATA: The shelf starts with 60 books and 15 books are removed.
+REASONING: Step 1: Start with 60 books. Step 2: Subtract 15 from 60 to get 45.
+CONCLUSION: 45 books remain.
+FINAL: The answer is 45.
+
+===== train / box_flow =====
+CONTEXT: This is a short task about items in a box. Only the listed quantities are used.
+PROBLEM: Find the final number of items.
+CONSTRAINT: Use subtraction then addition as described. Use every listed value.
+DATA: The box has 27 items. 10 leave and then 4 arrive.
+REASONING: Step 1: Subtract 10 from 27 to get 17. Step 2: Add 4 to 17 to get 21.
+CONCLUSION: The box finishes with 21 items.
+FINAL: The answer is 21.
+
+===== val / jar_sum =====
+CONTEXT: This is a short task about marbles in sealed jars. Only the listed quantities are used.
+PROBLEM: Determine the combined marble count without opening another jar.
+CONSTRAINT: Keep the order of the changes. Use addition as described.
+DATA: One labeled jar contains 26 marbles; another contains 14.
+REASONING: Step 1: Read the first label as 26. Step 2: Combine it with the second label, 14. Step 3: The combined count is 40.
+CONCLUSION: Together the two jars contain 40 marbles.
+FINAL: The answer is 40.
+
+===== test / carton_total =====
+CONTEXT: This is a short task about cartons and sample units. Only the listed quantities are used.
+PROBLEM: Determine the shipment's complete unit count.
+CONSTRAINT: Use multiplication followed by addition as described. Use every listed value.
+DATA: A shipment has 6 cartons, 8 units per carton, and 6 separate samples.
+REASONING: Step 1: The cartons account for 6 times 8. Step 2: That multiplication gives 48 boxed units. Step 3: Include 6 samples to reach 54.
+CONCLUSION: The complete shipment has 54 units.
+FINAL: The answer is 54.

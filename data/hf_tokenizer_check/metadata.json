@@ -1,0 +1,53 @@
+{
+  "counts": {
+    "test": 2,
+    "train": 36,
+    "val": 2
+  },
+  "seed": 1234,
+  "split_families": {
+    "test": [
+      "carton_total",
+      "token_balance"
+    ],
+    "train": [
+      "counter_sum",
+      "tray_sum",
+      "shelf_remainder",
+      "box_flow",
+      "equal_groups",
+      "pack_plus_loose",
+      "collection_flow",
+      "row_product"
+    ],
+    "val": [
+      "jar_sum",
+      "ticket_remainder"
+    ]
+  },
+  "tokenizer": {
+    "bos_token_id": 0,
+    "eos_token_id": 0,
+    "name": "HuggingFaceTB/SmolLM-135M",
+    "pad_token_id": 0,
+    "vocab_size": 49152
+  },
+  "zone_markers": [
+    "CONTEXT:",
+    "PROBLEM:",
+    "CONSTRAINT:",
+    "DATA:",
+    "REASONING:",
+    "CONCLUSION:",
+    "FINAL:"
+  ],
+  "zones": [
+    "context",
+    "problem",
+    "constraint",
+    "data",
+    "reasoning",
+    "intermediate_conclusion",
+    "final_answer"
+  ]
+}

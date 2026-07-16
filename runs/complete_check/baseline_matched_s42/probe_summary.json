@@ -1,0 +1,9 @@
+{
+  "arm": "baseline_matched",
+  "branch_a_macro_f1": 0.6074679238468088,
+  "probe_seed": 1234,
+  "seed": 42,
+  "test_tokens": 114,
+  "trunk_macro_f1": 0.39522606535728333,
+  "val_tokens": 110
+}

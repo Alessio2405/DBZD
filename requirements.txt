@@ -1,0 +1,9 @@
+# No CUDA-specific wheels: Kaggle supplies the matching PyTorch build.
+torch>=2.2
+transformers>=4.46,<5
+datasets>=2.18
+scikit-learn>=1.4
+matplotlib>=3.8
+PyYAML>=6.0
+numpy>=1.26
+
