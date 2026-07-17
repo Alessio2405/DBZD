@@ -22,6 +22,7 @@ REPORT_METRICS = (
     "answer_parse_fail_count",
     "answer_wrong_operands_count",
     "answer_arithmetic_error_count",
+    "zone_f1",
     "probe_trunk_f1",
     "probe_branch_a_f1",
     *(f"entropy_z{zone_id}" for zone_id in range(len(ZONE_NAMES))),
@@ -30,6 +31,24 @@ REPORT_METRICS = (
     "gate_std",
     "alpha",
 )
+
+METRIC_APPLICABILITY: dict[str, dict[str, bool]] = {
+    "baseline_matched": {"zone_f1": False, "alpha": False},
+    "multitask": {"zone_f1": True, "alpha": False},
+    "dbzd_full": {"zone_f1": True, "alpha": True},
+    "dbzd_stopgrad": {"zone_f1": True, "alpha": True},
+}
+
+ARM_METRIC_NOTES = {
+    "baseline_matched": "zone F1 — (λ=0); alpha — (identity gate)",
+    "multitask": "zone F1 meaningful; alpha — (identity gate)",
+    "dbzd_full": "zone F1 and alpha meaningful",
+    "dbzd_stopgrad": "zone F1 and alpha meaningful",
+}
+
+
+def _metric_is_meaningful(arm: str, metric: str) -> bool:
+    return METRIC_APPLICABILITY.get(arm, {}).get(metric, True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +77,7 @@ def _load_runs(runs_dir: Path) -> list[dict[str, Any]]:
             "answer_arithmetic_error_count": test.get(
                 "answer_arithmetic_error_count", float("nan")
             ),
+            "zone_f1": test.get("zone_f1", float("nan")),
             "gate_mean": test.get("gate_mean", float("nan")),
             "gate_std": test.get("gate_std", float("nan")),
             "alpha": test.get("alpha", float("nan")),
@@ -95,6 +115,9 @@ def _aggregate(
         result[arm] = {}
         result[arm]["_n"] = (float(len(arm_records)), 0.0)
         for metric in REPORT_METRICS:
+            if not _metric_is_meaningful(arm, metric):
+                result[arm][metric] = (float("nan"), float("nan"))
+                continue
             values = np.asarray(
                 [float(record.get(metric, float("nan"))) for record in arm_records],
                 dtype=float,
@@ -113,7 +136,7 @@ def _aggregate(
 def _format(mean_std: tuple[float, float]) -> str:
     mean, std = mean_std
     if not math.isfinite(mean):
-        return "n/a"
+        return "—"
     return f"{mean:.4f} +/- {std:.4f}"
 
 
@@ -126,6 +149,7 @@ def _write_table(
         "answer_parse_fail_count",
         "answer_wrong_operands_count",
         "answer_arithmetic_error_count",
+        "zone_f1",
         "probe_trunk_f1",
         "probe_branch_a_f1",
         "entropy_z3",
@@ -134,18 +158,39 @@ def _write_table(
         "gate_std",
         "alpha",
     ]
+    headers = [
+        "arm",
+        "answer acc",
+        "parse fail",
+        "wrong operands",
+        "arithmetic error",
+        "zone F1",
+        "probe trunk F1",
+        "probe branch A F1",
+        "Z3 entropy",
+        "Z6 entropy",
+        "gate mean",
+        "gate std",
+        "alpha",
+        "metric applicability",
+    ]
     lines = [
-        "| arm | answer acc | parse fail | wrong operands | arithmetic error | probe trunk F1 | probe branch A F1 | "
-        "Z3 entropy | Z6 entropy | gate mean | gate std | alpha |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| " + " | ".join(headers) + " |",
+        "|---|" + "---:|" * (len(headers) - 2) + "---|",
     ]
     csv_rows: list[dict[str, Any]] = []
     for arm in ARM_SETTINGS:
         if arm not in aggregate:
             continue
-        values = [_format(aggregate[arm][metric]) for metric in compact_metrics]
-        lines.append(f"| {arm} | " + " | ".join(values) + " |")
-        row: dict[str, Any] = {"arm": arm}
+        values = [
+            "—"
+            if not _metric_is_meaningful(arm, metric)
+            else _format(aggregate[arm][metric])
+            for metric in compact_metrics
+        ]
+        note = ARM_METRIC_NOTES[arm]
+        lines.append(f"| {arm} | " + " | ".join([*values, note]) + " |")
+        row: dict[str, Any] = {"arm": arm, "metric_applicability": note}
         for metric in REPORT_METRICS:
             row[f"{metric}_mean"], row[f"{metric}_std"] = aggregate[arm][metric]
         csv_rows.append(row)

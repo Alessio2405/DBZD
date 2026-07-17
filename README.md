@@ -128,12 +128,17 @@ retain the full checkpoint. Each run also contains:
   `PARSE_FAIL`/`WRONG_OPERANDS`/`ARITHMETIC_ERROR` counts, zone F1, train LM
   beside validation LM, and learned alpha
 - `checkpoint_best.pt` and `best_metrics.json` while a run is active
-- `generations_step_*.jsonl` plus `generations_best_final.jsonl` with decoded
-  outputs, parsed answers, gold answers, source operands, and error category
+- `generations_step_*.jsonl` plus `generations_best_final.jsonl` with every
+  decoded output (512 intermediate, full test at the end), parsed/gold answers,
+  source operands, stop reason, and error category
 - `gate_per_zone.csv` and `summary.json` computed from the selected best state
 
 Intermediate evaluations greedily decode at least 512 held-out prompts. Final
-answer accuracy and its error taxonomy use the complete test split. Revision
+answer accuracy and its error taxonomy use the complete test split. Parsing is
+strict: only the complete `The answer is <int>.` pattern is accepted, so an
+output cut off mid-number or before the period is `PARSE_FAIL`. The generation
+limit is derived from the test gold-completion token-length p99 plus 20 tokens
+(115 tokens for schema 3); smoke mode keeps its small explicit override. Revision
 `phase0_final_r3` trains for 1.5 epochs, evaluates and checkpoints every 250
 optimizer steps, and uses learning rate `1.25e-5`. Alpha init remains `0.3` and
 gate regularization remains `0.001`.
@@ -172,8 +177,22 @@ Then aggregate:
 python analysis.py --runs-dir runs
 ```
 
+To reclassify already-saved complete generation files after parser changes,
+without retraining or decoding again:
+
+```bash
+python scripts/recompute_taxonomy.py --runs-dir runs
+```
+
+The command updates generation JSONL, `metrics.csv`, and `summary.json`
+atomically. It refuses to alter a run if a file contains only displayed samples
+rather than the full expected 512/2000 records.
+
 Outputs under `runs/analysis/` include a mean ± standard-deviation table,
 entropy-by-zone and gate-by-zone plots, training curves, and `verdict.txt`.
+The table marks baseline zone F1 and alpha as `—`: the zone head is deliberately
+untrained at λ=0 and the gate is frozen. Multitask alpha is likewise `—` because
+its identity gate is frozen; zone F1 remains meaningful for every λ>0 arm.
 The verdict applies these pre-registered rules:
 
 - Phase 1 pass: full-model trunk probe F1 beats the matched baseline beyond

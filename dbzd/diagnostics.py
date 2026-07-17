@@ -187,13 +187,50 @@ def evaluate_loader(
 
 
 _ANSWER_PATTERN = re.compile(
-    r"The\s+answer\s+is\s*[:=]?\s*(-?\d+)(?!\w)", re.IGNORECASE
+    r"The\s+answer\s+is\s*[:=]?\s*(-?\d+)\s*\.", re.IGNORECASE
 )
 
 
 def parse_answer(text: str) -> int | None:
     match = _ANSWER_PATTERN.search(text)
     return int(match.group(1)) if match else None
+
+
+def gold_completion_token_budget(
+    records: Iterable[dict[str, Any]],
+    *,
+    eos_token_id: int | None,
+    percentile: float = 0.99,
+    margin_tokens: int = 20,
+) -> dict[str, int | float]:
+    if not 0.0 < percentile <= 1.0:
+        raise ValueError("percentile must be in (0, 1]")
+    if margin_tokens < 0:
+        raise ValueError("margin_tokens must be non-negative")
+    lengths: list[int] = []
+    for record in records:
+        token_ids = list(record["tokens"])
+        completion_length = len(token_ids) - int(record["prompt_token_count"])
+        if (
+            eos_token_id is not None
+            and token_ids
+            and token_ids[-1] == int(eos_token_id)
+        ):
+            completion_length -= 1
+        lengths.append(max(0, completion_length))
+    if not lengths:
+        raise ValueError("Cannot derive a generation budget from zero records")
+    lengths.sort()
+    rank = max(1, math.ceil(percentile * len(lengths)))
+    percentile_tokens = lengths[rank - 1]
+    return {
+        "sample_count": len(lengths),
+        "percentile": percentile,
+        "percentile_tokens": percentile_tokens,
+        "margin_tokens": margin_tokens,
+        "max_new_tokens": percentile_tokens + margin_tokens,
+        "maximum_gold_tokens": lengths[-1],
+    }
 
 
 ANSWER_ERROR_CATEGORIES = (
@@ -248,6 +285,22 @@ def classify_answer_error(
     allowed because valid intermediate results are not prompt operands.
     """
     expected_operands = calculation_operands(calculation)
+    category, generated_numbers = classify_answer_error_from_operands(
+        decoded_generation,
+        expected_operands,
+        predicted_answer,
+        gold_answer,
+    )
+    return category, expected_operands, generated_numbers
+
+
+def classify_answer_error_from_operands(
+    decoded_generation: str,
+    expected_operands: Iterable[int],
+    predicted_answer: int | None,
+    gold_answer: int,
+) -> tuple[str | None, list[int]]:
+    expected = [int(value) for value in expected_operands]
     answer_match = _ANSWER_PATTERN.search(decoded_generation)
     steps_text = (
         decoded_generation[: answer_match.start()]
@@ -258,17 +311,17 @@ def classify_answer_error(
     generated_numbers = [int(value) for value in re.findall(r"-?\d+", steps_text)]
 
     if predicted_answer is None:
-        return "PARSE_FAIL", expected_operands, generated_numbers
+        return "PARSE_FAIL", generated_numbers
     if predicted_answer == int(gold_answer):
-        return None, expected_operands, generated_numbers
+        return None, generated_numbers
 
-    expected_counts = Counter(expected_operands)
+    expected_counts = Counter(expected)
     generated_counts = Counter(generated_numbers)
     operands_match = all(
         generated_counts[value] >= count for value, count in expected_counts.items()
     )
     category = "ARITHMETIC_ERROR" if operands_match else "WRONG_OPERANDS"
-    return category, expected_operands, generated_numbers
+    return category, generated_numbers
 
 
 @torch.no_grad()
@@ -294,7 +347,7 @@ def greedy_answer_evaluation(
         raise ValueError("Tokenizer needs a pad token for batched generation")
     all_records = list(records)
     selected = all_records if limit is None else all_records[:limit]
-    samples: list[dict[str, Any]] = []
+    generations: list[dict[str, Any]] = []
     taxonomy = {category: 0 for category in ANSWER_ERROR_CATEGORIES}
     for start in range(0, len(selected), batch_size):
         batch_records = selected[start : start + batch_size]
@@ -344,7 +397,7 @@ def greedy_answer_evaluation(
                     finished[row] = True
             if all(finished):
                 break
-        for record, token_ids in zip(batch_records, generated):
+        for row, (record, token_ids) in enumerate(zip(batch_records, generated)):
             decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
             predicted = parse_answer(decoded)
             is_correct = predicted == int(record["answer"])
@@ -358,25 +411,30 @@ def greedy_answer_evaluation(
                 taxonomy[error_category] += 1
             correct += int(is_correct)
             attempted += 1
-            if len(samples) < sample_count:
-                samples.append(
-                    {
-                        "family": record.get("family"),
-                        "prompt": record.get("prompt_text", ""),
-                        "decoded_generation": decoded,
-                        "parsed_answer": predicted,
-                        "gold_answer": int(record["answer"]),
-                        "correct": is_correct,
-                        "error_category": error_category,
-                        "expected_operands": expected_operands,
-                        "generated_step_numbers": generated_numbers,
-                        "generated_tokens": len(token_ids),
-                    }
-                )
+            generations.append(
+                {
+                    "record_index": start + row,
+                    "family": record.get("family"),
+                    "prompt": record.get("prompt_text", ""),
+                    "decoded_generation": decoded,
+                    "parsed_answer": predicted,
+                    "gold_answer": int(record["answer"]),
+                    "correct": is_correct,
+                    "error_category": error_category,
+                    "calculation": record["calculation"],
+                    "expected_operands": expected_operands,
+                    "generated_step_numbers": generated_numbers,
+                    "generated_tokens": len(token_ids),
+                    "stopped_on_eos": finished[row],
+                    "hit_max_new_tokens": not finished[row]
+                    and len(token_ids) >= max_new_tokens,
+                }
+            )
     return {
         "accuracy": correct / attempted if attempted else float("nan"),
         "count": attempted,
         "correct": correct,
         "taxonomy": taxonomy,
-        "samples": samples,
+        "generations": generations,
+        "samples": generations[:sample_count],
     }

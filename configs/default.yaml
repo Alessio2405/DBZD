@@ -25,7 +25,9 @@ log_every_steps: 20
 max_eval_batches: null
 answer_eval_examples: 512
 answer_batch_size: 32
-answer_max_new_tokens: 96
+answer_max_new_tokens: null
+answer_length_percentile: 0.99
+answer_length_margin_tokens: 20
 generation_sample_count: 10
 gradient_cosine_params: 8
 precision: auto

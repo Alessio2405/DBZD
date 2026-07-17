@@ -105,6 +105,13 @@ def main() -> None:
     )
     if summary["test"]["answer_eval_count"] != test_count:
         raise AssertionError("Final answer evaluation did not cover the full test split")
+    saved_generation_count = len(
+        (run_dir / "generations_best_final.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    if saved_generation_count != test_count:
+        raise AssertionError("Final evaluation did not save every generation")
     taxonomy_total = sum(summary["answer_error_taxonomy"].values())
     if taxonomy_total + summary["test"]["answer_correct_count"] != test_count:
         raise AssertionError("Answer taxonomy does not partition the full test split")

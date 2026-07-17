@@ -18,6 +18,7 @@ from dbzd.config import ExperimentConfig, save_config
 from dbzd.data import CausalLMCollator, JSONLTokenDataset
 from dbzd.diagnostics import (
     evaluate_loader,
+    gold_completion_token_budget,
     gradient_cosine,
     greedy_answer_evaluation,
 )
@@ -139,17 +140,19 @@ def _load_model_checkpoint(path: Path, model: DBZDModel) -> dict[str, Any]:
     return payload
 
 
-def _write_generation_samples(
+def _write_generations(
     path: Path,
-    samples: list[dict[str, Any]],
+    generations: list[dict[str, Any]],
     *,
     label: str,
+    sample_count: int,
 ) -> None:
     with path.open("w", encoding="utf-8") as handle:
-        for sample in samples:
-            handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
-    print(f"\nGeneration samples ({label}):")
-    for index, sample in enumerate(samples, start=1):
+        for generation in generations:
+            handle.write(json.dumps(generation, ensure_ascii=False) + "\n")
+    print(f"\nSaved {len(generations)} generations to {path.name}.")
+    print(f"Generation samples ({label}):")
+    for index, sample in enumerate(generations[:sample_count], start=1):
         decoded = str(sample["decoded_generation"]).replace("\n", " ")
         print(
             f"  [{index:02d}] gold={sample['gold_answer']} "
@@ -236,10 +239,11 @@ def _run_evaluation(
         }
     )
     append_metric(metrics_path, metrics)
-    _write_generation_samples(
+    _write_generations(
         run_dir / f"generations_step_{global_step:06d}.jsonl",
-        answer_result["samples"],
+        answer_result["generations"],
         label=f"step {global_step}; n={answer_result['count']}",
+        sample_count=config.generation_sample_count,
     )
     model.train()
     return metrics
@@ -278,7 +282,6 @@ def run_training(
     best_checkpoint_path = run_dir / "checkpoint_best.pt"
     best_metrics_path = run_dir / "best_metrics.json"
 
-    save_config(config, run_dir / "resolved_config.yaml", arm, seed)
     (run_dir / "git_hash.txt").write_text(git_hash() + "\n", encoding="utf-8")
 
     metadata_path = data_dir / "metadata.json"
@@ -306,6 +309,32 @@ def run_training(
     train_dataset = JSONLTokenDataset(data_dir / "train.jsonl")
     val_dataset = JSONLTokenDataset(data_dir / "val.jsonl")
     test_dataset = JSONLTokenDataset(data_dir / "test.jsonl")
+    generation_budget = gold_completion_token_budget(
+        test_dataset.records,
+        eos_token_id=tokenizer.eos_token_id,
+        percentile=config.answer_length_percentile,
+        margin_tokens=config.answer_length_margin_tokens,
+    )
+    configured_generation_limit = config.answer_max_new_tokens
+    if configured_generation_limit is None:
+        effective_generation_limit = int(generation_budget["max_new_tokens"])
+        config = config.update(answer_max_new_tokens=effective_generation_limit)
+    else:
+        effective_generation_limit = int(configured_generation_limit)
+    generation_budget["effective_max_new_tokens"] = effective_generation_limit
+    generation_budget["configured_override"] = configured_generation_limit
+    save_config(config, run_dir / "resolved_config.yaml", arm, seed)
+    computed_generation_limit = int(generation_budget["max_new_tokens"])
+    budget_message = (
+        "Answer generation budget: "
+        f"p{config.answer_length_percentile * 100:g}="
+        f"{generation_budget['percentile_tokens']} + "
+        f"{config.answer_length_margin_tokens} margin = "
+        f"{computed_generation_limit} tokens"
+    )
+    if configured_generation_limit is not None:
+        budget_message += f"; configured override = {effective_generation_limit}"
+    print(budget_message + ".")
     collator = CausalLMCollator(int(pad_token_id), config.max_length)
     val_loader = _make_loader(
         val_dataset,
@@ -792,10 +821,11 @@ def run_training(
         }
     )
     append_metric(metrics_path, test_metrics)
-    _write_generation_samples(
+    _write_generations(
         run_dir / "generations_best_final.jsonl",
-        final_answer_result["samples"],
+        final_answer_result["generations"],
         label=f"best checkpoint, full test n={final_answer_result['count']}",
+        sample_count=config.generation_sample_count,
     )
     _write_gate_report(run_dir / "gate_per_zone.csv", test_metrics)
     print(
@@ -838,6 +868,7 @@ def run_training(
         "val": val_metrics,
         "test": test_metrics,
         "answer_error_taxonomy": final_answer_result["taxonomy"],
+        "answer_generation_budget": generation_budget,
         "generation_samples": "generations_best_final.jsonl",
         "gate_report": "gate_per_zone.csv",
         "config": config.to_dict(),

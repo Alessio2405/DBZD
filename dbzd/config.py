@@ -36,7 +36,9 @@ class ExperimentConfig:
     max_eval_batches: int | None = None
     answer_eval_examples: int = 512
     answer_batch_size: int = 32
-    answer_max_new_tokens: int = 96
+    answer_max_new_tokens: int | None = None
+    answer_length_percentile: float = 0.99
+    answer_length_margin_tokens: int = 20
     generation_sample_count: int = 10
     gradient_cosine_params: int = 8
     precision: str = "auto"
