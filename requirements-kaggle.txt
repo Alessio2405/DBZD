@@ -1,0 +1,9 @@
+# Kaggle supplies PyTorch. scripts/kaggle_torch_compat.py validates that its
+# CUDA wheel supports the assigned GPU and repairs the P100/sm_60 case.
+transformers>=4.46,<5
+datasets>=2.18
+scikit-learn>=1.4
+matplotlib>=3.8
+PyYAML>=6.0
+numpy>=1.26
+

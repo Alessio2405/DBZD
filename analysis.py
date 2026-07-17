@@ -25,6 +25,7 @@ REPORT_METRICS = (
     *(f"gate_mean_z{zone_id}" for zone_id in range(len(ZONE_NAMES))),
     "gate_mean",
     "gate_std",
+    "alpha",
 )
 
 
@@ -47,6 +48,8 @@ def _load_runs(runs_dir: Path) -> list[dict[str, Any]]:
             "answer_accuracy": test.get("answer_accuracy", float("nan")),
             "gate_mean": test.get("gate_mean", float("nan")),
             "gate_std": test.get("gate_std", float("nan")),
+            "alpha": test.get("alpha", float("nan")),
+            "best_step": summary.get("best_step"),
         }
         for zone_id in range(len(ZONE_NAMES)):
             record[f"entropy_z{zone_id}"] = test.get(
@@ -114,11 +117,12 @@ def _write_table(
         "entropy_z6",
         "gate_mean",
         "gate_std",
+        "alpha",
     ]
     lines = [
         "| arm | answer acc | probe trunk F1 | probe branch A F1 | "
-        "Z3 entropy | Z6 entropy | gate mean | gate std |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "Z3 entropy | Z6 entropy | gate mean | gate std | alpha |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     csv_rows: list[dict[str, Any]] = []
     for arm in ARM_SETTINGS:
@@ -182,24 +186,59 @@ def _training_curves(records: list[dict[str, Any]], output_path: Path) -> None:
         if not metrics_path.exists():
             continue
         with metrics_path.open(encoding="utf-8") as handle:
-            rows = [row for row in csv.DictReader(handle) if row["split"] == "train"]
-        if not rows:
+            all_rows = list(csv.DictReader(handle))
+        train_rows = [row for row in all_rows if row["split"] == "train"]
+        val_rows = [row for row in all_rows if row["split"] == "val"]
+        if not train_rows and not val_rows:
             continue
         found = True
-        steps = [int(row["global_step"]) for row in rows]
-        lm_losses = [float(row["lm_loss"]) for row in rows]
-        zone_losses = [float(row["zone_loss"]) for row in rows]
         label = f"{record['arm']}-s{record['seed']}"
-        axes[0].plot(steps, lm_losses, alpha=0.65, label=label)
-        axes[1].plot(steps, zone_losses, alpha=0.65, label=label)
+        if val_rows:
+            val_steps = [int(row["global_step"]) for row in val_rows]
+            val_lm = [float(row["lm_loss"]) for row in val_rows]
+            train_lm = [float(row["train_lm_loss"]) for row in val_rows]
+            axes[0].plot(val_steps, train_lm, marker="o", label=f"{label} train")
+            axes[0].plot(
+                val_steps,
+                val_lm,
+                marker="s",
+                linestyle="--",
+                label=f"{label} val",
+            )
+            axes[1].plot(
+                val_steps,
+                [float(row["zone_loss"]) for row in val_rows],
+                marker="s",
+                linestyle="--",
+                label=f"{label} val",
+            )
+        elif train_rows:
+            steps = [int(row["global_step"]) for row in train_rows]
+            axes[0].plot(
+                steps,
+                [float(row["lm_loss"]) for row in train_rows],
+                alpha=0.65,
+                label=f"{label} train",
+            )
+            axes[1].plot(
+                steps,
+                [float(row["zone_loss"]) for row in train_rows],
+                alpha=0.65,
+                label=f"{label} train",
+            )
+        if record.get("best_step") is not None:
+            axes[0].axvline(
+                int(record["best_step"]), color="black", alpha=0.18, linewidth=1
+            )
     if not found:
         plt.close(fig)
         return
-    axes[0].set_title("Training LM loss")
-    axes[1].set_title("Training zone loss")
+    axes[0].set_title("Train/validation LM loss (best step marked)")
+    axes[1].set_title("Validation zone loss")
     for axis in axes:
         axis.set_xlabel("optimizer step")
         axis.set_ylabel("loss")
+    axes[0].legend(fontsize=7, ncol=2)
     axes[1].legend(fontsize=7, ncol=2)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)

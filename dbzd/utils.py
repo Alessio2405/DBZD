@@ -27,6 +27,17 @@ def seed_everything(seed: int) -> None:
 
 def select_device() -> torch.device:
     if torch.cuda.is_available():
+        major, minor = torch.cuda.get_device_capability()
+        required_arch = f"sm_{major}{minor}"
+        compiled_arches = torch.cuda.get_arch_list()
+        if compiled_arches and required_arch not in compiled_arches:
+            raise RuntimeError(
+                f"GPU {torch.cuda.get_device_name(0)} requires {required_arch}, but "
+                f"PyTorch {torch.__version__} was compiled for {compiled_arches}. "
+                "On Kaggle, select a T4 or run "
+                "`python scripts/kaggle_torch_compat.py --auto-fix-p100` "
+                "before training."
+            )
         return torch.device("cuda")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
@@ -84,6 +95,7 @@ METRIC_FIELDS = [
     "epoch",
     "split",
     "learning_rate",
+    "train_lm_loss",
     "total_loss",
     "lm_loss",
     "zone_loss",
@@ -91,6 +103,8 @@ METRIC_FIELDS = [
     "zone_f1",
     "gradient_cosine",
     "answer_accuracy",
+    "answer_eval_count",
+    "alpha",
     "gate_mean",
     "gate_std",
     "entropy_mean",
@@ -135,4 +149,3 @@ def restore_rng_state(state: dict[str, Any]) -> None:
     torch.set_rng_state(state["torch"])
     if torch.cuda.is_available() and "cuda" in state:
         torch.cuda.set_rng_state_all(state["cuda"])
-

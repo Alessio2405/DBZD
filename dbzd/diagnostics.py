@@ -176,6 +176,7 @@ def evaluate_loader(
             "gate_mean": gate_overall.mean,
             "gate_std": gate_overall.std,
             "entropy_mean": entropy_overall.mean,
+            "alpha": float(model.fusion.alpha.detach().clamp(0.0, 1.0).item()),
         }
     )
     for zone_id in range(len(ZONE_NAMES)):
@@ -185,11 +186,18 @@ def evaluate_loader(
     return metrics
 
 
-_ANSWER_PATTERN = re.compile(r"The\s+answer\s+is\s+(-?\d+)", re.IGNORECASE)
+_ANSWER_PATTERN = re.compile(
+    r"The\s+answer\s+is\s*[:=]?\s*(-?\d+)", re.IGNORECASE
+)
+
+
+def parse_answer(text: str) -> int | None:
+    match = _ANSWER_PATTERN.search(text)
+    return int(match.group(1)) if match else None
 
 
 @torch.no_grad()
-def greedy_answer_accuracy(
+def greedy_answer_evaluation(
     model: DBZDModel,
     records: Iterable[dict[str, Any]],
     tokenizer: TokenizerLike,
@@ -197,10 +205,11 @@ def greedy_answer_accuracy(
     device: torch.device,
     max_length: int,
     max_new_tokens: int,
-    limit: int,
+    limit: int | None,
     batch_size: int = 8,
     precision: str = "fp32",
-) -> float:
+    sample_count: int = 10,
+) -> dict[str, Any]:
     model.eval()
     correct = 0
     attempted = 0
@@ -208,7 +217,9 @@ def greedy_answer_accuracy(
     pad_token_id = tokenizer.pad_token_id
     if pad_token_id is None:
         raise ValueError("Tokenizer needs a pad token for batched generation")
-    selected = list(records)[:limit]
+    all_records = list(records)
+    selected = all_records if limit is None else all_records[:limit]
+    samples: list[dict[str, Any]] = []
     for start in range(0, len(selected), batch_size):
         batch_records = selected[start : start + batch_size]
         prompts = [
@@ -236,12 +247,21 @@ def greedy_answer_accuracy(
             attention_mask = torch.tensor(
                 context_masks, dtype=torch.long, device=device
             )
+            last_indices = torch.tensor(
+                [length - 1 for length in lengths],
+                dtype=torch.long,
+                device=device,
+            )
             with autocast_context(device, precision):
-                output = model(input_ids=input_ids, attention_mask=attention_mask)
+                next_logits = model.next_token_logits(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    last_indices=last_indices,
+                )
             for row, length in enumerate(lengths):
                 if finished[row]:
                     continue
-                token = int(output.logits[row, length - 1].argmax().item())
+                token = int(next_logits[row].argmax().item())
                 sequences[row].append(token)
                 generated[row].append(token)
                 if eos_token_id is not None and token == eos_token_id:
@@ -250,8 +270,25 @@ def greedy_answer_accuracy(
                 break
         for record, token_ids in zip(batch_records, generated):
             decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
-            match = _ANSWER_PATTERN.search(decoded)
-            predicted = int(match.group(1)) if match else None
-            correct += int(predicted == int(record["answer"]))
+            predicted = parse_answer(decoded)
+            is_correct = predicted == int(record["answer"])
+            correct += int(is_correct)
             attempted += 1
-    return correct / attempted if attempted else float("nan")
+            if len(samples) < sample_count:
+                samples.append(
+                    {
+                        "family": record.get("family"),
+                        "prompt": record.get("prompt_text", ""),
+                        "decoded_generation": decoded,
+                        "parsed_answer": predicted,
+                        "gold_answer": int(record["answer"]),
+                        "correct": is_correct,
+                        "generated_tokens": len(token_ids),
+                    }
+                )
+    return {
+        "accuracy": correct / attempted if attempted else float("nan"),
+        "count": attempted,
+        "correct": correct,
+        "samples": samples,
+    }

@@ -1,11 +1,18 @@
 param(
     [string]$Config = "configs/default.yaml",
-    [string]$RunRoot = "runs"
+    [string]$RunRoot = "runs",
+    [bool]$ReviewOnly = $true
 )
 
 $ErrorActionPreference = "Stop"
-$Arms = @("baseline_matched", "multitask", "dbzd_full", "dbzd_stopgrad")
-$Seeds = @(42, 43, 44)
+if ($ReviewOnly) {
+    $Arms = @("dbzd_full")
+    $Seeds = @(42)
+    Write-Host "Review gate active: only dbzd_full seed 42 will run."
+} else {
+    $Arms = @("baseline_matched", "multitask", "dbzd_full", "dbzd_stopgrad")
+    $Seeds = @(42, 43, 44)
+}
 
 foreach ($Arm in $Arms) {
     foreach ($Seed in $Seeds) {

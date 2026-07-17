@@ -63,11 +63,11 @@ def _load_model(
         gamma_reg=config.gamma_reg,
         alpha_init=config.alpha_init,
     )
-    checkpoint_path = (
-        run_dir / "model_final.pt"
-        if (run_dir / "model_final.pt").exists()
-        else run_dir / "checkpoint_latest.pt"
-    )
+    checkpoint_path = run_dir / "model_final.pt"
+    if not checkpoint_path.exists():
+        checkpoint_path = run_dir / "checkpoint_best.pt"
+    if not checkpoint_path.exists():
+        checkpoint_path = run_dir / "checkpoint_latest.pt"
     try:
         checkpoint = torch.load(
             checkpoint_path,

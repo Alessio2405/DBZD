@@ -304,6 +304,32 @@ class DBZDModel(nn.Module):
             zone_hidden=zone_hidden if return_hidden else None,
         )
 
+    def next_token_logits(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        last_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return only each sequence's final valid-position LM logits.
+
+        Batched answer evaluation pads prompts to different lengths. Avoiding
+        the vocabulary projection at every earlier position makes full-test
+        greedy decoding substantially cheaper without changing predictions.
+        """
+        _, generation_hidden, zone_hidden = self.branch_hidden_states(
+            input_ids, attention_mask
+        )
+        rows = torch.arange(input_ids.shape[0], device=input_ids.device)
+        generation_last = generation_hidden[rows, last_indices].unsqueeze(1)
+        zone_last = zone_hidden[rows, last_indices].unsqueeze(1)
+        fused_last, _ = self.fusion(
+            generation_last,
+            zone_last,
+            enabled=self.fusion_enabled,
+            stop_gradient=self.stop_gradient,
+        )
+        return self.lm_head(fused_last).squeeze(1)
+
     def shared_trunk_parameters(self) -> Iterator[nn.Parameter]:
         if self.backbone_kind == "llama":
             yield from self.backbone.embed_tokens.parameters()

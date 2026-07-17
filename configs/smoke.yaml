@@ -1,3 +1,4 @@
+experiment_revision: phase0_review_r2
 model_name: tiny
 fallback_model: null
 tokenizer_name: simple
@@ -6,9 +7,9 @@ run_root: runs/smoke
 fork_layers: 2
 num_zones: 7
 max_length: 160
-alpha_init: 0.1
+alpha_init: 0.3
 lambda_zone: 0.5
-gamma_reg: 0.01
+gamma_reg: 0.001
 epochs: 1
 batch_size: 4
 eval_batch_size: 4
@@ -25,6 +26,7 @@ max_eval_batches: 1
 answer_eval_examples: 1
 answer_batch_size: 1
 answer_max_new_tokens: 8
+generation_sample_count: 1
 gradient_cosine_params: 2
 precision: fp32
 num_workers: 0

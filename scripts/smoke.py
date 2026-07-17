@@ -86,8 +86,11 @@ def main() -> None:
         data_dir / "test.jsonl",
         run_dir / "metrics.csv",
         run_dir / "checkpoint_latest.pt",
+        run_dir / "checkpoint_best.pt",
         run_dir / "summary.json",
         run_dir / "probe_summary.json",
+        run_dir / "generations_best_final.jsonl",
+        run_dir / "gate_per_zone.csv",
         run_root / "analysis" / "aggregate_table.csv",
         run_root / "analysis" / "entropy_by_zone.png",
     ]
@@ -97,9 +100,15 @@ def main() -> None:
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     if summary["global_step"] != 3:
         raise AssertionError("Resume smoke unexpectedly changed optimizer step count")
+    test_count = len(
+        (data_dir / "test.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    if summary["test"]["answer_eval_count"] != test_count:
+        raise AssertionError("Final answer evaluation did not cover the full test split")
+    if summary["best_step"] > summary["global_step"]:
+        raise AssertionError("Best checkpoint step is outside the training trajectory")
     print("SMOKE PASS: data -> train -> resume -> probe -> analysis", flush=True)
 
 
 if __name__ == "__main__":
     main()
-

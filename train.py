@@ -12,10 +12,15 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
+from datagen.generator import DATAGEN_SCHEMA_VERSION
 from datagen.tokenizer import load_tokenizer
 from dbzd.config import ExperimentConfig, save_config
 from dbzd.data import CausalLMCollator, JSONLTokenDataset
-from dbzd.diagnostics import evaluate_loader, gradient_cosine, greedy_answer_accuracy
+from dbzd.diagnostics import (
+    evaluate_loader,
+    gradient_cosine,
+    greedy_answer_evaluation,
+)
 from dbzd.utils import (
     append_metric,
     autocast_context,
@@ -125,6 +130,48 @@ def _load_checkpoint(
     )
 
 
+def _load_model_checkpoint(path: Path, model: DBZDModel) -> dict[str, Any]:
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        payload = torch.load(path, map_location="cpu")
+    model.load_state_dict(payload["model"])
+    return payload
+
+
+def _write_generation_samples(
+    path: Path,
+    samples: list[dict[str, Any]],
+    *,
+    label: str,
+) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for sample in samples:
+            handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
+    print(f"\nGeneration samples ({label}):")
+    for index, sample in enumerate(samples, start=1):
+        decoded = str(sample["decoded_generation"]).replace("\n", " ")
+        print(
+            f"  [{index:02d}] gold={sample['gold_answer']} "
+            f"parsed={sample['parsed_answer']} correct={sample['correct']}\n"
+            f"       {decoded}"
+        )
+
+
+def _write_gate_report(path: Path, metrics: dict[str, Any]) -> None:
+    lines = ["zone_id,zone,gate_mean,gate_std"]
+    print("\nBest-checkpoint gate statistics by zone:")
+    print("  zone                         mean       std")
+    from datagen.generator import ZONE_NAMES
+
+    for zone_id, zone_name in enumerate(ZONE_NAMES):
+        mean = float(metrics[f"gate_mean_z{zone_id}"])
+        std = float(metrics[f"gate_std_z{zone_id}"])
+        lines.append(f"{zone_id},{zone_name},{mean:.8f},{std:.8f}")
+        print(f"  Z{zone_id} {zone_name:<24} {mean:>8.5f}  {std:>8.5f}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _run_evaluation(
     *,
     model: DBZDModel,
@@ -136,7 +183,9 @@ def _run_evaluation(
     global_step: int,
     epoch: float,
     metrics_path: Path,
+    run_dir: Path,
     precision: str,
+    train_lm_loss: float,
 ) -> dict[str, float]:
     metrics = evaluate_loader(
         model,
@@ -153,7 +202,7 @@ def _run_evaluation(
         max_parameters=config.gradient_cosine_params,
         precision=precision,
     )
-    metrics["answer_accuracy"] = greedy_answer_accuracy(
+    answer_result = greedy_answer_evaluation(
         model,
         test_dataset.records,
         tokenizer,
@@ -163,7 +212,11 @@ def _run_evaluation(
         limit=config.answer_eval_examples,
         batch_size=config.answer_batch_size,
         precision=precision,
+        sample_count=config.generation_sample_count,
     )
+    metrics["answer_accuracy"] = float(answer_result["accuracy"])
+    metrics["answer_eval_count"] = int(answer_result["count"])
+    metrics["train_lm_loss"] = train_lm_loss
     metrics.update(
         {
             "global_step": global_step,
@@ -172,6 +225,11 @@ def _run_evaluation(
         }
     )
     append_metric(metrics_path, metrics)
+    _write_generation_samples(
+        run_dir / f"generations_step_{global_step:06d}.jsonl",
+        answer_result["samples"],
+        label=f"step {global_step}; n={answer_result['count']}",
+    )
     model.train()
     return metrics
 
@@ -188,15 +246,38 @@ def run_training(
     precision = resolve_precision(device, config.precision)
     data_dir = Path(config.data_dir)
     run_dir = Path(config.run_root) / f"{arm}_s{seed}"
+    if run_dir.exists() and not resume:
+        generated_names = {
+            "metrics.csv",
+            "checkpoint_latest.pt",
+            "checkpoint_best.pt",
+            "best_metrics.json",
+            "model_final.pt",
+            "summary.json",
+            "probe_summary.json",
+            "gate_per_zone.csv",
+        }
+        for path in run_dir.iterdir():
+            if path.name in generated_names or path.name.startswith("generations_"):
+                if path.is_file():
+                    path.unlink()
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = run_dir / "metrics.csv"
     checkpoint_path = run_dir / "checkpoint_latest.pt"
+    best_checkpoint_path = run_dir / "checkpoint_best.pt"
+    best_metrics_path = run_dir / "best_metrics.json"
 
     save_config(config, run_dir / "resolved_config.yaml", arm, seed)
     (run_dir / "git_hash.txt").write_text(git_hash() + "\n", encoding="utf-8")
 
     metadata_path = data_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("generator_schema_version") != DATAGEN_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Dataset schema {metadata.get('generator_schema_version')} is stale; "
+            f"revision {config.experiment_revision} requires datagen schema "
+            f"{DATAGEN_SCHEMA_VERSION}. Regenerate {data_dir}."
+        )
     tokenizer_name = (
         config.tokenizer_name
         or metadata.get("tokenizer", {}).get("name")
@@ -270,6 +351,10 @@ def run_training(
     start_epoch = 0
     start_batch = 0
     global_step = 0
+    best_val_lm = float("inf")
+    best_step = -1
+    best_epoch = 0.0
+    best_selection_metrics: dict[str, Any] = {}
     if resume:
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"--resume requested but {checkpoint_path} is missing")
@@ -285,6 +370,12 @@ def run_training(
             f"Resumed {arm} seed {seed} at epoch {start_epoch}, "
             f"batch {start_batch}, step {global_step}."
         )
+        if best_metrics_path.exists() and best_checkpoint_path.exists():
+            best_state = json.loads(best_metrics_path.read_text(encoding="utf-8"))
+            best_val_lm = float(best_state["val_lm"])
+            best_step = int(best_state["global_step"])
+            best_epoch = float(best_state["epoch"])
+            best_selection_metrics = dict(best_state["selection_metrics"])
 
     print(
         f"Training {arm} seed {seed} on {device} ({precision}); "
@@ -295,6 +386,12 @@ def run_training(
     stopped_early = False
     last_epoch = start_epoch
     last_batch = start_batch
+    train_lm_total = 0.0
+    train_lm_count = 0
+    last_train_lm = float("nan")
+    last_eval_step = -1
+    last_eval_metrics: dict[str, float] | None = None
+    optimizer_updates_this_invocation = 0
 
     for epoch in range(start_epoch, config.epochs):
         train_loader = _make_loader(
@@ -329,6 +426,10 @@ def run_training(
                     raise RuntimeError("Training forward did not return a loss")
                 scaled_loss = output.loss / config.grad_accum_steps
 
+            if output.lm_loss is not None:
+                train_lm_total += float(output.lm_loss.detach().float().item())
+                train_lm_count += 1
+
             scaler.scale(scaled_loss).backward()
             should_step = (
                 (batch_index + 1) % config.grad_accum_steps == 0
@@ -345,6 +446,7 @@ def run_training(
             clamp_fusion_alpha(model)
             scheduler.step()
             global_step += 1
+            optimizer_updates_this_invocation += 1
 
             if global_step % config.log_every_steps == 0:
                 append_metric(
@@ -368,10 +470,32 @@ def run_training(
                         "reg_loss": float(
                             output.regularization_loss.detach().float().item()
                         ),
+                        "alpha": float(
+                            model.fusion.alpha.detach().clamp(0.0, 1.0).item()
+                        ),
                     },
                 )
 
             if global_step % config.eval_every_steps == 0:
+                # The answer diagnostic is intentionally large; persist all
+                # resumable state before entering that long evaluation.
+                _save_checkpoint(
+                    checkpoint_path,
+                    _checkpoint_payload(
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        scaler=scaler,
+                        epoch=epoch,
+                        batch_in_epoch=batch_index + 1,
+                        global_step=global_step,
+                    ),
+                )
+                current_train_lm = (
+                    train_lm_total / train_lm_count
+                    if train_lm_count
+                    else last_train_lm
+                )
                 eval_metrics = _run_evaluation(
                     model=model,
                     val_loader=val_loader,
@@ -382,15 +506,58 @@ def run_training(
                     global_step=global_step,
                     epoch=epoch + (batch_index + 1) / len(train_loader),
                     metrics_path=metrics_path,
+                    run_dir=run_dir,
                     precision=precision,
+                    train_lm_loss=current_train_lm,
                 )
+                last_train_lm = current_train_lm
+                train_lm_total = 0.0
+                train_lm_count = 0
+                last_eval_step = global_step
+                last_eval_metrics = eval_metrics
+                if float(eval_metrics["lm_loss"]) < best_val_lm:
+                    best_val_lm = float(eval_metrics["lm_loss"])
+                    best_step = global_step
+                    best_epoch = float(eval_metrics["epoch"])
+                    best_selection_metrics = dict(eval_metrics)
+                    _save_checkpoint(
+                        best_checkpoint_path,
+                        {
+                            "model": model.state_dict(),
+                            "global_step": best_step,
+                            "epoch": best_epoch,
+                            "val_lm": best_val_lm,
+                            "selection_metrics": best_selection_metrics,
+                            "model_source": model.source_model_name,
+                        },
+                    )
+                    best_metrics_path.write_text(
+                        json.dumps(
+                            {
+                                "global_step": best_step,
+                                "epoch": best_epoch,
+                                "val_lm": best_val_lm,
+                                "selection_metrics": best_selection_metrics,
+                            },
+                            indent=2,
+                            sort_keys=True,
+                        ),
+                        encoding="utf-8",
+                    )
+                    print(f"New best checkpoint: step={best_step} val_lm={best_val_lm:.4f}")
                 print(
-                    f"step={global_step} val_lm={eval_metrics['lm_loss']:.4f} "
+                    f"step={global_step} train_lm={current_train_lm:.4f} "
+                    f"val_lm={eval_metrics['lm_loss']:.4f} "
                     f"zone_f1={eval_metrics['zone_f1']:.3f} "
-                    f"answer_acc={eval_metrics['answer_accuracy']:.3f}"
+                    f"answer_acc={eval_metrics['answer_accuracy']:.3f} "
+                    f"(n={int(eval_metrics['answer_eval_count'])}) "
+                    f"alpha={eval_metrics['alpha']:.4f}"
                 )
 
-            if global_step % config.save_every_steps == 0:
+            if (
+                global_step % config.save_every_steps == 0
+                and global_step % config.eval_every_steps != 0
+            ):
                 _save_checkpoint(
                     checkpoint_path,
                     _checkpoint_payload(
@@ -439,18 +606,101 @@ def run_training(
         ),
     )
 
-    val_metrics = _run_evaluation(
-        model=model,
-        val_loader=val_loader,
-        test_dataset=test_dataset,
-        tokenizer=tokenizer,
-        config=config,
+    current_train_lm = (
+        train_lm_total / train_lm_count if train_lm_count else last_train_lm
+    )
+    if optimizer_updates_this_invocation == 0 and best_selection_metrics:
+        last_eval_metrics = dict(best_selection_metrics)
+        last_eval_step = global_step
+    if last_eval_step != global_step or last_eval_metrics is None:
+        last_eval_metrics = _run_evaluation(
+            model=model,
+            val_loader=val_loader,
+            test_dataset=test_dataset,
+            tokenizer=tokenizer,
+            config=config,
+            device=device,
+            global_step=global_step,
+            epoch=float(last_epoch),
+            metrics_path=metrics_path,
+            run_dir=run_dir,
+            precision=precision,
+            train_lm_loss=current_train_lm,
+        )
+        last_eval_step = global_step
+
+    if float(last_eval_metrics["lm_loss"]) < best_val_lm:
+        best_val_lm = float(last_eval_metrics["lm_loss"])
+        best_step = global_step
+        best_epoch = float(last_eval_metrics["epoch"])
+        best_selection_metrics = dict(last_eval_metrics)
+        _save_checkpoint(
+            best_checkpoint_path,
+            {
+                "model": model.state_dict(),
+                "global_step": best_step,
+                "epoch": best_epoch,
+                "val_lm": best_val_lm,
+                "selection_metrics": best_selection_metrics,
+                "model_source": model.source_model_name,
+            },
+        )
+        best_metrics_path.write_text(
+            json.dumps(
+                {
+                    "global_step": best_step,
+                    "epoch": best_epoch,
+                    "val_lm": best_val_lm,
+                    "selection_metrics": best_selection_metrics,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        print(f"New best checkpoint: step={best_step} val_lm={best_val_lm:.4f}")
+
+    if not best_checkpoint_path.exists():
+        raise RuntimeError("Training finished without producing a best checkpoint")
+    best_payload = _load_model_checkpoint(best_checkpoint_path, model)
+    model.to(device).eval()
+    best_step = int(best_payload["global_step"])
+    best_epoch = float(best_payload["epoch"])
+    best_val_lm = float(best_payload["val_lm"])
+    best_selection_metrics = dict(best_payload["selection_metrics"])
+    print(
+        f"Selected best checkpoint at step {best_step} "
+        f"(epoch {best_epoch:.3f}, val_lm={best_val_lm:.4f})."
+    )
+
+    # All reported final representation, entropy, gate, and answer metrics are
+    # recomputed after loading the selected best checkpoint.
+    val_metrics = evaluate_loader(
+        model,
+        val_loader,
         device=device,
-        global_step=global_step,
-        epoch=float(last_epoch),
-        metrics_path=metrics_path,
+        max_batches=config.max_eval_batches,
         precision=precision,
     )
+    val_metrics["gradient_cosine"] = gradient_cosine(
+        model,
+        next(iter(val_loader)),
+        device=device,
+        max_parameters=config.gradient_cosine_params,
+        precision=precision,
+    )
+    val_metrics.update(
+        {
+            "train_lm_loss": best_selection_metrics.get("train_lm_loss"),
+            "answer_accuracy": best_selection_metrics.get("answer_accuracy"),
+            "answer_eval_count": best_selection_metrics.get("answer_eval_count"),
+            "global_step": best_step,
+            "epoch": best_epoch,
+            "split": "val_best",
+        }
+    )
+    append_metric(metrics_path, val_metrics)
+
     test_metrics = evaluate_loader(
         model,
         test_loader,
@@ -458,34 +708,42 @@ def run_training(
         max_batches=config.max_eval_batches,
         precision=precision,
     )
-    test_first_batch = next(iter(test_loader))
     test_metrics["gradient_cosine"] = gradient_cosine(
         model,
-        test_first_batch,
+        next(iter(test_loader)),
         device=device,
         max_parameters=config.gradient_cosine_params,
         precision=precision,
     )
-    test_metrics["answer_accuracy"] = greedy_answer_accuracy(
+    final_answer_result = greedy_answer_evaluation(
         model,
         test_dataset.records,
         tokenizer,
         device=device,
         max_length=config.max_length,
         max_new_tokens=config.answer_max_new_tokens,
-        limit=config.answer_eval_examples,
+        limit=None,
         batch_size=config.answer_batch_size,
         precision=precision,
+        sample_count=config.generation_sample_count,
     )
-    append_metric(
-        metrics_path,
+    test_metrics.update(
         {
-            **test_metrics,
-            "global_step": global_step,
-            "epoch": float(last_epoch),
-            "split": "test",
-        },
+            "answer_accuracy": float(final_answer_result["accuracy"]),
+            "answer_eval_count": int(final_answer_result["count"]),
+            "global_step": best_step,
+            "epoch": best_epoch,
+            "split": "test_best",
+        }
     )
+    append_metric(metrics_path, test_metrics)
+    _write_generation_samples(
+        run_dir / "generations_best_final.jsonl",
+        final_answer_result["samples"],
+        label=f"best checkpoint, full test n={final_answer_result['count']}",
+    )
+    _write_gate_report(run_dir / "gate_per_zone.csv", test_metrics)
+
     completed = not stopped_early and last_epoch >= config.epochs
     final_model_path = run_dir / "model_final.pt"
     if completed:
@@ -495,7 +753,8 @@ def run_training(
                 "model": model.state_dict(),
                 "arm": arm,
                 "seed": seed,
-                "global_step": global_step,
+                "global_step": best_step,
+                "best_val_lm": best_val_lm,
                 "model_source": model.source_model_name,
             },
         )
@@ -503,14 +762,21 @@ def run_training(
         "arm": arm,
         "seed": seed,
         "global_step": global_step,
+        "best_step": best_step,
+        "best_epoch": best_epoch,
+        "best_val_lm": best_val_lm,
         "device": str(device),
         "precision": precision,
         "parameter_count": model.total_parameter_count(),
         "model_source": model.source_model_name,
         "completed": completed,
         "git_hash": git_hash(),
+        "selection": best_selection_metrics,
+        "last_val": last_eval_metrics,
         "val": val_metrics,
         "test": test_metrics,
+        "generation_samples": "generations_best_final.jsonl",
+        "gate_report": "gate_per_zone.csv",
         "config": config.to_dict(),
     }
     summary_path = run_dir / "summary.json"
@@ -518,8 +784,10 @@ def run_training(
         json.dumps(summary, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    if completed and config.compact_completed_checkpoint and checkpoint_path.exists():
-        checkpoint_path.unlink()
+    if completed and config.compact_completed_checkpoint:
+        for compacted_path in (checkpoint_path, best_checkpoint_path):
+            if compacted_path.exists():
+                compacted_path.unlink()
     print(f"Finished {arm} seed {seed}; summary: {summary_path}")
     return summary_path
 

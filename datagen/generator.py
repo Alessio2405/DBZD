@@ -18,14 +18,30 @@ ZONE_NAMES = (
     "final_answer",
 )
 
-ZONE_MARKERS = (
-    "CONTEXT:",
-    "PROBLEM:",
-    "CONSTRAINT:",
-    "DATA:",
-    "REASONING:",
-    "CONCLUSION:",
-    "FINAL:",
+DATAGEN_SCHEMA_VERSION = 2
+
+ZONE_MARKER_VARIANTS = (
+    ("CONTEXT:", "SETTING:", "BACKGROUND:"),
+    ("PROBLEM:", "TASK:", "QUESTION:"),
+    ("CONSTRAINT:", "RULES:", "REQUIREMENTS:"),
+    ("DATA:", "VALUES:", "GIVEN:"),
+    ("REASONING:", "WORK:", "SOLUTION STEPS:"),
+    ("CONCLUSION:", "RESULT:", "INTERMEDIATE RESULT:"),
+    ("FINAL:", "ANSWER:", "FINAL RESPONSE:"),
+)
+
+# Kept as the canonical representative of each zone for backwards-compatible
+# metadata consumers. Generation samples from all variants above.
+ZONE_MARKERS = tuple(variants[0] for variants in ZONE_MARKER_VARIANTS)
+
+SECTION_TRANSITIONS = (
+    ("",),
+    ("", "Next section -- ", "The task now is: "),
+    ("", "Please follow these: ", "Before solving, note the "),
+    ("", "The quantities follow. ", "For this instance, use the "),
+    ("", "Now work it out. ", "Proceed with the "),
+    ("", "From those steps, the ", "This gives the "),
+    ("", "To finish, give the ", "The requested output is the "),
 )
 
 
@@ -38,6 +54,7 @@ class GeneratedExample:
     context_sentences: int
     constraint_count: int
     reasoning_steps: int
+    section_markers: tuple[str, ...]
 
     @property
     def raw_text(self) -> str:
@@ -95,7 +112,7 @@ def _context(rng: random.Random, subject: str) -> tuple[str, int]:
         ],
     ]
     sentences = rng.choice(options)
-    return f"{ZONE_MARKERS[0]} {' '.join(sentences)}", len(sentences)
+    return " ".join(sentences), len(sentences)
 
 
 def _constraints(rng: random.Random, operation_hint: str) -> tuple[str, int]:
@@ -107,7 +124,7 @@ def _constraints(rng: random.Random, operation_hint: str) -> tuple[str, int]:
     ]
     count = rng.randint(1, 3)
     chosen = rng.sample(pool, count)
-    return f"{ZONE_MARKERS[2]} {' '.join(chosen)}", count
+    return " ".join(chosen), count
 
 
 def _reasoning(steps: Iterable[str]) -> tuple[str, int]:
@@ -115,7 +132,17 @@ def _reasoning(steps: Iterable[str]) -> tuple[str, int]:
     rendered = " ".join(
         f"Step {index}: {text}" for index, text in enumerate(step_list, start=1)
     )
-    return f"{ZONE_MARKERS[4]} {rendered}", len(step_list)
+    return rendered, len(step_list)
+
+
+def _render_section(
+    rng: random.Random,
+    zone_id: int,
+    marker: str,
+    content: str,
+) -> str:
+    transition = rng.choice(SECTION_TRANSITIONS[zone_id])
+    return f"{transition}{marker} {content}"
 
 
 def _build_example(
@@ -134,14 +161,21 @@ def _build_example(
     context, context_count = _context(rng, subject)
     constraints, constraint_count = _constraints(rng, operation_hint)
     reasoning, reasoning_count = _reasoning(steps)
-    zone_texts = (
+    section_markers = tuple(
+        rng.choice(variants) for variants in ZONE_MARKER_VARIANTS
+    )
+    section_contents = (
         context,
-        f"{ZONE_MARKERS[1]} {problem}",
+        problem,
         constraints,
-        f"{ZONE_MARKERS[3]} {data}",
+        data,
         reasoning,
-        f"{ZONE_MARKERS[5]} {conclusion.format(answer=answer)}",
-        f"{ZONE_MARKERS[6]} The answer is {answer}.",
+        conclusion.format(answer=answer),
+        f"The answer is {answer}.",
+    )
+    zone_texts = tuple(
+        _render_section(rng, zone_id, section_markers[zone_id], content)
+        for zone_id, content in enumerate(section_contents)
     )
     return GeneratedExample(
         family=family,
@@ -151,6 +185,7 @@ def _build_example(
         context_sentences=context_count,
         constraint_count=constraint_count,
         reasoning_steps=reasoning_count,
+        section_markers=section_markers,
     )
 
 
@@ -238,7 +273,7 @@ def _subtract_add(rng: random.Random, family: str) -> GeneratedExample:
 
 
 def _multiply(rng: random.Random, family: str) -> GeneratedExample:
-    groups, size = rng.randint(2, 12), rng.randint(2, 15)
+    groups, size = rng.randint(2, 9), rng.randint(2, 10)
     return _build_example(
         rng=rng,
         family=family,
@@ -256,8 +291,8 @@ def _multiply(rng: random.Random, family: str) -> GeneratedExample:
 
 
 def _multiply_add(rng: random.Random, family: str) -> GeneratedExample:
-    groups, size = rng.randint(2, 9), rng.randint(2, 12)
-    loose = rng.randint(1, 10)
+    groups, size = rng.randint(2, 8), rng.randint(2, 10)
+    loose = rng.randint(1, min(9, 99 - groups * size))
     product = groups * size
     return _build_example(
         rng=rng,
@@ -281,7 +316,7 @@ def _multiply_add(rng: random.Random, family: str) -> GeneratedExample:
 
 
 def _row_product(rng: random.Random, family: str) -> GeneratedExample:
-    rows, per_row = rng.randint(2, 10), rng.randint(3, 14)
+    rows, per_row = rng.randint(2, 9), rng.randint(3, 10)
     return _build_example(
         rng=rng,
         family=family,
@@ -498,6 +533,7 @@ def tokenize_example(
         "family": example.family,
         "split": split,
         "calculation": example.calculation,
+        "section_markers": list(example.section_markers),
         "shape": {
             "context_sentences": example.context_sentences,
             "constraint_count": example.constraint_count,
@@ -552,10 +588,14 @@ def generate_dataset(
         tokenizer.save(output_path / "simple_tokenizer.json")
 
     metadata = {
+        "generator_schema_version": DATAGEN_SCHEMA_VERSION,
         "seed": seed,
         "counts": counts,
         "zones": list(ZONE_NAMES),
         "zone_markers": list(ZONE_MARKERS),
+        "zone_marker_variants": [
+            list(variants) for variants in ZONE_MARKER_VARIANTS
+        ],
         "split_families": {key: list(value) for key, value in SPLIT_FAMILIES.items()},
         "tokenizer": tokenizer_metadata(tokenizer, tokenizer_name),
     }
