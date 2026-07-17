@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -18,7 +19,7 @@ ZONE_NAMES = (
     "final_answer",
 )
 
-DATAGEN_SCHEMA_VERSION = 2
+DATAGEN_SCHEMA_VERSION = 3
 
 ZONE_MARKER_VARIANTS = (
     ("CONTEXT:", "SETTING:", "BACKGROUND:"),
@@ -458,6 +459,188 @@ def _token_balance(rng: random.Random, family: str) -> GeneratedExample:
     )
 
 
+@dataclass(frozen=True)
+class SurfaceFamilySpec:
+    kind: str
+    subject: str
+    item: str
+    problem: str
+
+
+_SURFACE_FAMILY_SPECS: dict[str, SurfaceFamilySpec] = {
+    "bead_bowls": SurfaceFamilySpec(
+        "add_two", "beads in two bowls", "beads", "Find the combined bead count."
+    ),
+    "coin_purses": SurfaceFamilySpec(
+        "add_two", "coins in two purses", "coins", "Work out how many coins the purses hold together."
+    ),
+    "fruit_baskets": SurfaceFamilySpec(
+        "add_three", "fruit in three baskets", "pieces of fruit", "Total the fruit across all three baskets."
+    ),
+    "route_segments": SurfaceFamilySpec(
+        "add_three", "three route segments", "kilometers", "Find the full route length."
+    ),
+    "plant_remainder": SurfaceFamilySpec(
+        "subtract", "plants in a greenhouse", "plants", "Determine how many plants stay in the greenhouse."
+    ),
+    "snack_remainder": SurfaceFamilySpec(
+        "subtract", "snacks in a pantry", "snacks", "Calculate the number of snacks left."
+    ),
+    "bus_flow": SurfaceFamilySpec(
+        "subtract_add", "passengers on a bus", "passengers", "Find the passenger count after one stop."
+    ),
+    "tank_flow": SurfaceFamilySpec(
+        "subtract_add", "liters in a tank", "liters", "Compute the final amount in the tank."
+    ),
+    "team_groups": SurfaceFamilySpec(
+        "multiply", "players assigned to teams", "players", "Count all players in the equal teams."
+    ),
+    "stamp_sheets": SurfaceFamilySpec(
+        "multiply", "stamps printed on sheets", "stamps", "Determine the total number of printed stamps."
+    ),
+    "bundle_spares": SurfaceFamilySpec(
+        "multiply_add", "bundled cables and spare cables", "cables", "Find the complete cable count."
+    ),
+    "case_samples": SurfaceFamilySpec(
+        "multiply_add", "cases and individual samples", "samples", "Count every sample, boxed or separate."
+    ),
+    "score_flow": SurfaceFamilySpec(
+        "add_subtract", "points in a game round", "points", "Compute the score after a bonus and a penalty."
+    ),
+    "inventory_flow": SurfaceFamilySpec(
+        "add_subtract", "units in an inventory", "units", "Find the inventory after a delivery and a withdrawal."
+    ),
+    "tile_array": SurfaceFamilySpec(
+        "multiply", "tiles in a rectangular array", "tiles", "Work out how many tiles fill the array."
+    ),
+    "packet_extras": SurfaceFamilySpec(
+        "multiply_add", "packets and extra cards", "cards", "Find the total number of cards."
+    ),
+}
+
+
+def _build_surface_family(
+    rng: random.Random,
+    family: str,
+    spec: SurfaceFamilySpec,
+) -> GeneratedExample:
+    if spec.kind == "add_two":
+        first, second = rng.randint(2, 35), rng.randint(2, 35)
+        calculation = {"kind": "add", "values": [first, second]}
+        data = (
+            f"The first group contains {first} {spec.item}; "
+            f"the second contains {second} {spec.item}."
+        )
+        steps = [
+            f"Read the two counts as {first} and {second}.",
+            f"Their sum is {first + second} {spec.item}.",
+        ]
+    elif spec.kind == "add_three":
+        first, second, third = (rng.randint(2, 20) for _ in range(3))
+        subtotal = first + second
+        calculation = {"kind": "add", "values": [first, second, third]}
+        data = (
+            f"The three listed amounts are {first}, {second}, and {third} "
+            f"{spec.item}."
+        )
+        steps = [
+            f"Combine {first} with {second} to make {subtotal}.",
+            f"Include {third} to reach {subtotal + third} {spec.item}.",
+        ]
+    elif spec.kind == "subtract":
+        start = rng.randint(20, 90)
+        removed = rng.randint(2, start - 2)
+        calculation = {"kind": "subtract", "start": start, "subtract": [removed]}
+        data = f"The initial amount is {start} {spec.item}, and {removed} are taken away."
+        steps = [
+            f"Use {start} as the starting count.",
+            f"Removing {removed} leaves {start - removed} {spec.item}.",
+        ]
+    elif spec.kind == "subtract_add":
+        start = rng.randint(15, 65)
+        removed = rng.randint(2, min(15, start - 1))
+        after_remove = start - removed
+        added = rng.randint(2, min(20, 98 - after_remove))
+        calculation = {
+            "kind": "subtract_add",
+            "start": start,
+            "subtract": [removed],
+            "add": [added],
+        }
+        data = (
+            f"Begin with {start} {spec.item}; {removed} leave, then {added} arrive."
+        )
+        steps = [
+            f"Subtract {removed} from {start} to obtain {after_remove}.",
+            f"Add the arriving {added} for a final count of {after_remove + added}.",
+        ]
+    elif spec.kind == "multiply":
+        groups = rng.randint(2, 9)
+        size = rng.randint(2, min(10, 99 // groups))
+        calculation = {"kind": "multiply", "factors": [groups, size]}
+        data = f"There are {groups} equal sets with {size} {spec.item} in each set."
+        steps = [
+            f"Identify {groups} sets of size {size}.",
+            f"Multiplying {groups} by {size} gives {groups * size} {spec.item}.",
+        ]
+    elif spec.kind == "multiply_add":
+        groups, size = rng.randint(2, 8), rng.randint(2, 10)
+        product = groups * size
+        extra = rng.randint(1, min(15, 99 - product))
+        calculation = {
+            "kind": "multiply_add",
+            "factors": [groups, size],
+            "add": [extra],
+        }
+        data = (
+            f"There are {groups} full sets of {size} {spec.item} plus "
+            f"{extra} separate {spec.item}."
+        )
+        steps = [
+            f"The full sets contain {groups} times {size}, which is {product}.",
+            f"Adding the {extra} separate items gives {product + extra} {spec.item}.",
+        ]
+    elif spec.kind == "add_subtract":
+        start = rng.randint(10, 45)
+        added = rng.randint(5, min(30, 98 - start))
+        after_add = start + added
+        removed = rng.randint(2, min(20, after_add - 1))
+        calculation = {
+            "kind": "add_subtract",
+            "start": start,
+            "add": [added],
+            "subtract": [removed],
+        }
+        data = (
+            f"Start at {start} {spec.item}, add {added}, and later remove {removed}."
+        )
+        steps = [
+            f"The addition changes {start} by {added} to {after_add}.",
+            f"Taking away {removed} produces {after_add - removed} {spec.item}.",
+        ]
+    else:
+        raise ValueError(f"Unsupported surface family kind: {spec.kind}")
+
+    return _build_example(
+        rng=rng,
+        family=family,
+        subject=spec.subject,
+        problem=spec.problem,
+        operation_hint=spec.kind.replace("_", " "),
+        data=data,
+        steps=steps,
+        conclusion=f"The resulting number of {spec.item} is {{answer}}.",
+        calculation=calculation,
+    )
+
+
+def _make_surface_builder(spec: SurfaceFamilySpec) -> FamilyBuilder:
+    def builder(rng: random.Random, family: str) -> GeneratedExample:
+        return _build_surface_family(rng, family, spec)
+
+    return builder
+
+
 FAMILY_BUILDERS: dict[str, FamilyBuilder] = {
     "counter_sum": _add_two,
     "tray_sum": _add_three,
@@ -471,6 +654,10 @@ FAMILY_BUILDERS: dict[str, FamilyBuilder] = {
     "ticket_remainder": _ticket_remainder,
     "carton_total": _carton_total,
     "token_balance": _token_balance,
+    **{
+        family: _make_surface_builder(spec)
+        for family, spec in _SURFACE_FAMILY_SPECS.items()
+    },
 }
 
 SPLIT_FAMILIES: dict[str, tuple[str, ...]] = {
@@ -483,6 +670,22 @@ SPLIT_FAMILIES: dict[str, tuple[str, ...]] = {
         "pack_plus_loose",
         "collection_flow",
         "row_product",
+        "bead_bowls",
+        "coin_purses",
+        "fruit_baskets",
+        "route_segments",
+        "plant_remainder",
+        "snack_remainder",
+        "bus_flow",
+        "tank_flow",
+        "team_groups",
+        "stamp_sheets",
+        "bundle_spares",
+        "case_samples",
+        "score_flow",
+        "inventory_flow",
+        "tile_array",
+        "packet_extras",
     ),
     "val": ("jar_sum", "ticket_remainder"),
     "test": ("carton_total", "token_balance"),
@@ -571,6 +774,7 @@ def generate_dataset(
     )
     split_seed_offsets = {"train": 0, "val": 10_000, "test": 20_000}
     inspection_records: list[str] = []
+    roundtrip_checked = 0
 
     for split, count in counts.items():
         examples = generate_examples(split, count, seed + split_seed_offsets[split])
@@ -578,6 +782,35 @@ def generate_dataset(
         with output_file.open("w", encoding="utf-8") as handle:
             for index, example in enumerate(examples):
                 record = tokenize_example(example, tokenizer, split=split)
+                if re.search(r"(?<=[A-Za-z])\d|\d(?=[A-Za-z])", example.raw_text):
+                    raise ValueError(
+                        f"Datagen emitted a number without clean spacing in {example.family}"
+                    )
+                if roundtrip_checked < 100:
+                    content_tokens = list(record["tokens"])
+                    if (
+                        tokenizer.eos_token_id is not None
+                        and content_tokens
+                        and content_tokens[-1] == int(tokenizer.eos_token_id)
+                    ):
+                        content_tokens.pop()
+                    try:
+                        decoded = tokenizer.decode(
+                            content_tokens,
+                            skip_special_tokens=True,
+                            clean_up_tokenization_spaces=False,
+                        )
+                    except TypeError:
+                        decoded = tokenizer.decode(
+                            content_tokens, skip_special_tokens=True
+                        )
+                    if decoded != example.raw_text:
+                        raise ValueError(
+                            "Tokenizer round-trip changed datagen text at "
+                            f"example {roundtrip_checked} ({split}/{example.family}): "
+                            f"expected {example.raw_text!r}, got {decoded!r}"
+                        )
+                    roundtrip_checked += 1
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
                 if index < 3:
                     inspection_records.append(
@@ -591,6 +824,7 @@ def generate_dataset(
         "generator_schema_version": DATAGEN_SCHEMA_VERSION,
         "seed": seed,
         "counts": counts,
+        "tokenizer_roundtrip_examples": roundtrip_checked,
         "zones": list(ZONE_NAMES),
         "zone_markers": list(ZONE_MARKERS),
         "zone_marker_variants": [

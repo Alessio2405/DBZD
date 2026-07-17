@@ -19,6 +19,9 @@ from model.dbzd import ARM_SETTINGS
 
 REPORT_METRICS = (
     "answer_accuracy",
+    "answer_parse_fail_count",
+    "answer_wrong_operands_count",
+    "answer_arithmetic_error_count",
     "probe_trunk_f1",
     "probe_branch_a_f1",
     *(f"entropy_z{zone_id}" for zone_id in range(len(ZONE_NAMES))),
@@ -46,6 +49,15 @@ def _load_runs(runs_dir: Path) -> list[dict[str, Any]]:
             "seed": summary["seed"],
             "run_dir": summary_path.parent,
             "answer_accuracy": test.get("answer_accuracy", float("nan")),
+            "answer_parse_fail_count": test.get(
+                "answer_parse_fail_count", float("nan")
+            ),
+            "answer_wrong_operands_count": test.get(
+                "answer_wrong_operands_count", float("nan")
+            ),
+            "answer_arithmetic_error_count": test.get(
+                "answer_arithmetic_error_count", float("nan")
+            ),
             "gate_mean": test.get("gate_mean", float("nan")),
             "gate_std": test.get("gate_std", float("nan")),
             "alpha": test.get("alpha", float("nan")),
@@ -111,6 +123,9 @@ def _write_table(
 ) -> str:
     compact_metrics = [
         "answer_accuracy",
+        "answer_parse_fail_count",
+        "answer_wrong_operands_count",
+        "answer_arithmetic_error_count",
         "probe_trunk_f1",
         "probe_branch_a_f1",
         "entropy_z3",
@@ -120,9 +135,9 @@ def _write_table(
         "alpha",
     ]
     lines = [
-        "| arm | answer acc | probe trunk F1 | probe branch A F1 | "
+        "| arm | answer acc | parse fail | wrong operands | arithmetic error | probe trunk F1 | probe branch A F1 | "
         "Z3 entropy | Z6 entropy | gate mean | gate std | alpha |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     csv_rows: list[dict[str, Any]] = []
     for arm in ARM_SETTINGS:

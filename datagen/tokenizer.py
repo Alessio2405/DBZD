@@ -16,7 +16,7 @@ class TokenizerLike(Protocol):
     def decode(self, token_ids: list[int], skip_special_tokens: bool = True) -> str: ...
 
 
-_TOKEN_PATTERN = re.compile(r"\d+|[A-Za-z]+|[^\w\s]", re.ASCII)
+_TOKEN_PATTERN = re.compile(r"\s+|\d+|[A-Za-z]+|.", re.ASCII)
 
 
 class SimpleTokenizer:
@@ -86,9 +86,7 @@ class SimpleTokenizer:
             if skip_special_tokens and token in special:
                 continue
             tokens.append(token)
-        text = " ".join(tokens)
-        text = re.sub(r"\s+([.,:;!?])", r"\1", text)
-        return text
+        return "".join(tokens)
 
     def save(self, path: str | Path) -> None:
         output = Path(path)
@@ -135,4 +133,3 @@ def tokenizer_metadata(tokenizer: TokenizerLike, name: str) -> dict[str, Any]:
         "bos_token_id": tokenizer.bos_token_id,
         "eos_token_id": tokenizer.eos_token_id,
     }
-

@@ -1,4 +1,4 @@
-experiment_revision: phase0_review_r2
+experiment_revision: phase0_final_r3
 model_name: tiny
 fallback_model: null
 tokenizer_name: simple

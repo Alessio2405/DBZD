@@ -153,7 +153,8 @@ def _write_generation_samples(
         decoded = str(sample["decoded_generation"]).replace("\n", " ")
         print(
             f"  [{index:02d}] gold={sample['gold_answer']} "
-            f"parsed={sample['parsed_answer']} correct={sample['correct']}\n"
+            f"parsed={sample['parsed_answer']} correct={sample['correct']} "
+            f"error={sample.get('error_category')}\n"
             f"       {decoded}"
         )
 
@@ -216,6 +217,16 @@ def _run_evaluation(
     )
     metrics["answer_accuracy"] = float(answer_result["accuracy"])
     metrics["answer_eval_count"] = int(answer_result["count"])
+    metrics["answer_correct_count"] = int(answer_result["correct"])
+    metrics["answer_parse_fail_count"] = int(
+        answer_result["taxonomy"]["PARSE_FAIL"]
+    )
+    metrics["answer_wrong_operands_count"] = int(
+        answer_result["taxonomy"]["WRONG_OPERANDS"]
+    )
+    metrics["answer_arithmetic_error_count"] = int(
+        answer_result["taxonomy"]["ARITHMETIC_ERROR"]
+    )
     metrics["train_lm_loss"] = train_lm_loss
     metrics.update(
         {
@@ -335,8 +346,14 @@ def run_training(
     )
     batches_per_epoch = math.ceil(len(train_dataset) / config.batch_size)
     optimizer_steps_per_epoch = math.ceil(batches_per_epoch / config.grad_accum_steps)
-    planned_steps = optimizer_steps_per_epoch * config.epochs
-    total_steps = min(planned_steps, config.max_steps or planned_steps)
+    planned_steps = math.ceil(optimizer_steps_per_epoch * config.epochs)
+    total_steps = min(
+        planned_steps,
+        config.max_steps if config.max_steps is not None else planned_steps,
+    )
+    limited_by_max_steps = (
+        config.max_steps is not None and config.max_steps < planned_steps
+    )
     warmup_steps = round(total_steps * config.warmup_ratio)
     scheduler = LambdaLR(
         optimizer,
@@ -384,6 +401,7 @@ def run_training(
     model.train()
     optimizer.zero_grad(set_to_none=True)
     stopped_early = False
+    reached_training_target = global_step >= total_steps
     last_epoch = start_epoch
     last_batch = start_batch
     train_lm_total = 0.0
@@ -393,7 +411,7 @@ def run_training(
     last_eval_metrics: dict[str, float] | None = None
     optimizer_updates_this_invocation = 0
 
-    for epoch in range(start_epoch, config.epochs):
+    for epoch in range(start_epoch, math.ceil(config.epochs)):
         train_loader = _make_loader(
             train_dataset,
             collator,
@@ -403,8 +421,9 @@ def run_training(
             num_workers=config.num_workers,
         )
         for batch_index, batch in enumerate(train_loader):
-            if config.max_steps is not None and global_step >= config.max_steps:
-                stopped_early = True
+            if global_step >= total_steps:
+                reached_training_target = True
+                stopped_early = limited_by_max_steps
                 break
             if epoch == start_epoch and batch_index < start_batch:
                 continue
@@ -553,6 +572,14 @@ def run_training(
                     f"(n={int(eval_metrics['answer_eval_count'])}) "
                     f"alpha={eval_metrics['alpha']:.4f}"
                 )
+                print(
+                    "  answer errors: "
+                    f"PARSE_FAIL={int(eval_metrics['answer_parse_fail_count'])} "
+                    "WRONG_OPERANDS="
+                    f"{int(eval_metrics['answer_wrong_operands_count'])} "
+                    "ARITHMETIC_ERROR="
+                    f"{int(eval_metrics['answer_arithmetic_error_count'])}"
+                )
 
             if (
                 global_step % config.save_every_steps == 0
@@ -571,12 +598,13 @@ def run_training(
                     ),
                 )
 
-            if config.max_steps is not None and global_step >= config.max_steps:
-                stopped_early = True
+            if global_step >= total_steps:
+                reached_training_target = True
+                stopped_early = limited_by_max_steps
                 break
 
         start_batch = 0
-        if stopped_early:
+        if reached_training_target:
             break
         last_epoch = epoch + 1
         last_batch = 0
@@ -606,6 +634,11 @@ def run_training(
         ),
     )
 
+    final_epoch_progress = (
+        float(last_epoch)
+        if last_batch == 0
+        else float(last_epoch) + last_batch / batches_per_epoch
+    )
     current_train_lm = (
         train_lm_total / train_lm_count if train_lm_count else last_train_lm
     )
@@ -621,7 +654,7 @@ def run_training(
             config=config,
             device=device,
             global_step=global_step,
-            epoch=float(last_epoch),
+            epoch=final_epoch_progress,
             metrics_path=metrics_path,
             run_dir=run_dir,
             precision=precision,
@@ -694,6 +727,18 @@ def run_training(
             "train_lm_loss": best_selection_metrics.get("train_lm_loss"),
             "answer_accuracy": best_selection_metrics.get("answer_accuracy"),
             "answer_eval_count": best_selection_metrics.get("answer_eval_count"),
+            "answer_correct_count": best_selection_metrics.get(
+                "answer_correct_count"
+            ),
+            "answer_parse_fail_count": best_selection_metrics.get(
+                "answer_parse_fail_count"
+            ),
+            "answer_wrong_operands_count": best_selection_metrics.get(
+                "answer_wrong_operands_count"
+            ),
+            "answer_arithmetic_error_count": best_selection_metrics.get(
+                "answer_arithmetic_error_count"
+            ),
             "global_step": best_step,
             "epoch": best_epoch,
             "split": "val_best",
@@ -731,6 +776,16 @@ def run_training(
         {
             "answer_accuracy": float(final_answer_result["accuracy"]),
             "answer_eval_count": int(final_answer_result["count"]),
+            "answer_correct_count": int(final_answer_result["correct"]),
+            "answer_parse_fail_count": int(
+                final_answer_result["taxonomy"]["PARSE_FAIL"]
+            ),
+            "answer_wrong_operands_count": int(
+                final_answer_result["taxonomy"]["WRONG_OPERANDS"]
+            ),
+            "answer_arithmetic_error_count": int(
+                final_answer_result["taxonomy"]["ARITHMETIC_ERROR"]
+            ),
             "global_step": best_step,
             "epoch": best_epoch,
             "split": "test_best",
@@ -743,8 +798,15 @@ def run_training(
         label=f"best checkpoint, full test n={final_answer_result['count']}",
     )
     _write_gate_report(run_dir / "gate_per_zone.csv", test_metrics)
+    print(
+        "\nFull-test answer taxonomy: "
+        + ", ".join(
+            f"{category}={count}"
+            for category, count in final_answer_result["taxonomy"].items()
+        )
+    )
 
-    completed = not stopped_early and last_epoch >= config.epochs
+    completed = not limited_by_max_steps and global_step >= planned_steps
     final_model_path = run_dir / "model_final.pt"
     if completed:
         _save_checkpoint(
@@ -775,6 +837,7 @@ def run_training(
         "last_val": last_eval_metrics,
         "val": val_metrics,
         "test": test_metrics,
+        "answer_error_taxonomy": final_answer_result["taxonomy"],
         "generation_samples": "generations_best_final.jsonl",
         "gate_report": "gate_per_zone.csv",
         "config": config.to_dict(),

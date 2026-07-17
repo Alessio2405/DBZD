@@ -9,7 +9,7 @@ import yaml
 
 @dataclass
 class ExperimentConfig:
-    experiment_revision: str = "phase0_review_r2"
+    experiment_revision: str = "phase0_final_r3"
     model_name: str = "HuggingFaceTB/SmolLM-135M"
     fallback_model: str | None = "EleutherAI/pythia-160m"
     tokenizer_name: str | None = None
@@ -21,17 +21,17 @@ class ExperimentConfig:
     alpha_init: float = 0.3
     lambda_zone: float = 0.5
     gamma_reg: float = 0.001
-    epochs: int = 3
+    epochs: float = 1.5
     batch_size: int = 4
     eval_batch_size: int = 8
     grad_accum_steps: int = 8
-    learning_rate: float = 2.5e-5
+    learning_rate: float = 1.25e-5
     weight_decay: float = 0.01
     warmup_ratio: float = 0.05
     max_grad_norm: float = 1.0
     max_steps: int | None = None
-    eval_every_steps: int = 500
-    save_every_steps: int = 500
+    eval_every_steps: int = 250
+    save_every_steps: int = 250
     log_every_steps: int = 20
     max_eval_batches: int | None = None
     answer_eval_examples: int = 512

@@ -105,6 +105,19 @@ def main() -> None:
     )
     if summary["test"]["answer_eval_count"] != test_count:
         raise AssertionError("Final answer evaluation did not cover the full test split")
+    taxonomy_total = sum(summary["answer_error_taxonomy"].values())
+    if taxonomy_total + summary["test"]["answer_correct_count"] != test_count:
+        raise AssertionError("Answer taxonomy does not partition the full test split")
+    metrics_header = (run_dir / "metrics.csv").read_text(
+        encoding="utf-8"
+    ).splitlines()[0]
+    for field in (
+        "answer_parse_fail_count",
+        "answer_wrong_operands_count",
+        "answer_arithmetic_error_count",
+    ):
+        if field not in metrics_header:
+            raise AssertionError(f"metrics.csv is missing {field}")
     if summary["best_step"] > summary["global_step"]:
         raise AssertionError("Best checkpoint step is outside the training trajectory")
     print("SMOKE PASS: data -> train -> resume -> probe -> analysis", flush=True)

@@ -84,10 +84,13 @@ python -m datagen --output-dir data/tiny --tokenizer simple --n 200
 Every JSONL record contains `tokens`, aligned `zone_ids`, the integer `answer`,
 raw text, template family, an auditable arithmetic program, and
 `prompt_token_count` for Z0-Z3 answer generation. Train, validation, and test
-template-family sets are disjoint. Datagen schema 2 randomizes at least three
-lexical markers for every zone and section-transition wording. Operands have at
-most two digits and every result is below 100 so Phase 0 does not become an
-arithmetic-capability benchmark.
+template-family sets are disjoint. Datagen schema 3 uses 24 distinct training
+template families while keeping the train split at 40,000 examples. It
+randomizes at least three lexical markers for every zone and section-transition
+wording. Operands have at most two digits and every result is below 100 so Phase
+0 does not become an arithmetic-capability benchmark. Generation also rejects
+number/word concatenation and verifies an exact tokenize-to-decode round trip on
+the first 100 records with the selected student tokenizer.
 
 ## Train and resume
 
@@ -121,17 +124,19 @@ retain the full checkpoint. Each run also contains:
 
 - `resolved_config.yaml` and `git_hash.txt`
 - `metrics.csv` with train/eval curves, gate mean/std overall and per zone,
-  gradient cosine, entropy overall and per zone, answer accuracy/count, zone F1,
-  train LM beside validation LM, and learned alpha
+  gradient cosine, entropy overall and per zone, answer accuracy/count, the
+  `PARSE_FAIL`/`WRONG_OPERANDS`/`ARITHMETIC_ERROR` counts, zone F1, train LM
+  beside validation LM, and learned alpha
 - `checkpoint_best.pt` and `best_metrics.json` while a run is active
 - `generations_step_*.jsonl` plus `generations_best_final.jsonl` with decoded
-  outputs, parsed answers, and gold answers
+  outputs, parsed answers, gold answers, source operands, and error category
 - `gate_per_zone.csv` and `summary.json` computed from the selected best state
 
 Intermediate evaluations greedily decode at least 512 held-out prompts. Final
-answer accuracy uses the complete test split. The default optimization changes
-for review revision `phase0_review_r2` are learning rate `2.5e-5`, alpha init
-`0.3`, and gate regularization weight `0.001`.
+answer accuracy and its error taxonomy use the complete test split. Revision
+`phase0_final_r3` trains for 1.5 epochs, evaluates and checkpoints every 250
+optimizer steps, and uses learning rate `1.25e-5`. Alpha init remains `0.3` and
+gate regularization remains `0.001`.
 
 CUDA uses fp16 plus `GradScaler` on T4/P100. Auto precision selects bf16 only on
 supported Ampere-or-newer GPUs. Device selection is CUDA, then MPS, then CPU.
@@ -185,14 +190,15 @@ The verdict applies these pre-registered rules:
    T4/P100 accelerator and Internet, and select **Save Version** with background
    execution.
 3. Edit only the first notebook cell: set `REPO_URL` and your Kaggle Dataset
-   slug. The current review gate deliberately permits only `dbzd_full`, seed 42.
+   slug. The approved matrix already contains all four arms and seeds 42/43/44.
 4. For a private GitHub repository, add a Kaggle Secret named
    `GITHUB_TOKEN`. The notebook reads it without printing it.
 5. If resuming, attach the previous runs Dataset as notebook input and set
    `RUNS_INPUT_DIR` to its `/kaggle/input/.../runs` directory.
 6. Run the notebook. It clones the repo, installs requirements, restores prior
    runs, generates data if absent, resumes partial checkpoints, trains the
-   selected subset, runs probes, and packages results.
+   complete 12-run matrix, runs probes and analysis, then publishes `runs/` as
+   a Kaggle Dataset version and creates a ZIP fallback.
 7. Download the resulting runs Dataset locally and execute
    `python analysis.py --runs-dir /path/to/downloaded/runs`.
 
@@ -203,24 +209,24 @@ automatically installs the official PyTorch 2.8.0 CUDA 12.6 wheel, validates
 that `sm_60` is present, and runs a small CUDA operation. A T4 does not need
 this replacement and is the faster way to start a fresh session.
 
-### Current review run
+### Approved final run
 
-Before launching the remaining nine runs, leave these parameters unchanged:
+The checked-in notebook uses the complete matrix and the new data/schedule
+revision, so all older results are deliberately invalidated:
 
 ```python
-ARMS = ["dbzd_full"]
-SEEDS = [42]
-EXPERIMENT_REVISION = "phase0_review_r2"
-REVIEW_ONLY = True
+ARMS = ["baseline_matched", "multitask", "dbzd_full", "dbzd_stopgrad"]
+SEEDS = [42, 43, 44]
+EXPERIMENT_REVISION = "phase0_final_r3"
+DATAGEN_SCHEMA_VERSION = 3
 ```
 
 The notebook removes an older run directory only when its resolved revision is
-not `phase0_review_r2`; an interrupted current-revision run still resumes. At
-the end, review `generations_best_final.jsonl`, `gate_per_zone.csv`, and
-`runs/analysis/training_curves.png`. Set `REVIEW_ONLY = False` only after the
-review authorizes the other arms.
-
-After review approval, a recommended session partition is:
+not `phase0_final_r3`; an interrupted current-revision run still resumes. A
+single Kaggle session may be shorter than the full matrix. In that case, attach
+the latest runs Dataset and use the same matrix: completed runs are skipped and
+the interrupted checkpoint resumes. If you intentionally partition sessions,
+change only `ARMS` while retaining the same config and seed list, for example:
 
 ```python
 # Session 1
@@ -232,8 +238,8 @@ ARMS = ["multitask"]
 SEEDS = [42, 43, 44]
 ```
 
-Repeat for `dbzd_full` and `dbzd_stopgrad`. Keeping a session to roughly three
-or four runs limits interruption cost.
+Repeat for `dbzd_full` and `dbzd_stopgrad`; the scientific config remains
+identical across all arms.
 
 ### One-time Kaggle Dataset setup
 

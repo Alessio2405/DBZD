@@ -1,4 +1,4 @@
-experiment_revision: phase0_review_r2
+experiment_revision: phase0_final_r3
 model_name: HuggingFaceTB/SmolLM-135M
 fallback_model: EleutherAI/pythia-160m
 tokenizer_name: null
@@ -10,17 +10,17 @@ max_length: 512
 alpha_init: 0.3
 lambda_zone: 0.5
 gamma_reg: 0.001
-epochs: 3
+epochs: 1.5
 batch_size: 4
 eval_batch_size: 8
 grad_accum_steps: 8
-learning_rate: 0.000025
+learning_rate: 0.0000125
 weight_decay: 0.01
 warmup_ratio: 0.05
 max_grad_norm: 1.0
 max_steps: null
-eval_every_steps: 500
-save_every_steps: 500
+eval_every_steps: 250
+save_every_steps: 250
 log_every_steps: 20
 max_eval_batches: null
 answer_eval_examples: 512

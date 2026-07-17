@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any, Iterable
 
 import numpy as np
@@ -187,13 +187,88 @@ def evaluate_loader(
 
 
 _ANSWER_PATTERN = re.compile(
-    r"The\s+answer\s+is\s*[:=]?\s*(-?\d+)", re.IGNORECASE
+    r"The\s+answer\s+is\s*[:=]?\s*(-?\d+)(?!\w)", re.IGNORECASE
 )
 
 
 def parse_answer(text: str) -> int | None:
     match = _ANSWER_PATTERN.search(text)
     return int(match.group(1)) if match else None
+
+
+ANSWER_ERROR_CATEGORIES = (
+    "PARSE_FAIL",
+    "WRONG_OPERANDS",
+    "ARITHMETIC_ERROR",
+)
+
+
+def calculation_operands(calculation: dict[str, Any]) -> list[int]:
+    kind = calculation["kind"]
+    if kind == "add":
+        return [int(value) for value in calculation["values"]]
+    if kind == "subtract":
+        return [
+            int(calculation["start"]),
+            *(int(value) for value in calculation["subtract"]),
+        ]
+    if kind == "multiply":
+        return [int(value) for value in calculation["factors"]]
+    if kind == "add_subtract":
+        return [
+            int(calculation["start"]),
+            *(int(value) for value in calculation["add"]),
+            *(int(value) for value in calculation["subtract"]),
+        ]
+    if kind == "subtract_add":
+        return [
+            int(calculation["start"]),
+            *(int(value) for value in calculation["subtract"]),
+            *(int(value) for value in calculation["add"]),
+        ]
+    if kind == "multiply_add":
+        return [
+            *(int(value) for value in calculation["factors"]),
+            *(int(value) for value in calculation["add"]),
+        ]
+    raise ValueError(f"Unknown calculation kind: {kind}")
+
+
+def classify_answer_error(
+    decoded_generation: str,
+    calculation: dict[str, Any],
+    predicted_answer: int | None,
+    gold_answer: int,
+) -> tuple[str | None, list[int], list[int]]:
+    """Classify a wrong answer using source operands, not intermediate values.
+
+    Step labels and the final-answer phrase are removed before extracting numbers.
+    A generated derivation has the right operands when it contains every numeric
+    input from the prompt with at least the same multiplicity. Extra numbers are
+    allowed because valid intermediate results are not prompt operands.
+    """
+    expected_operands = calculation_operands(calculation)
+    answer_match = _ANSWER_PATTERN.search(decoded_generation)
+    steps_text = (
+        decoded_generation[: answer_match.start()]
+        if answer_match is not None
+        else decoded_generation
+    )
+    steps_text = re.sub(r"\bStep\s+\d+\s*:", " ", steps_text, flags=re.IGNORECASE)
+    generated_numbers = [int(value) for value in re.findall(r"-?\d+", steps_text)]
+
+    if predicted_answer is None:
+        return "PARSE_FAIL", expected_operands, generated_numbers
+    if predicted_answer == int(gold_answer):
+        return None, expected_operands, generated_numbers
+
+    expected_counts = Counter(expected_operands)
+    generated_counts = Counter(generated_numbers)
+    operands_match = all(
+        generated_counts[value] >= count for value, count in expected_counts.items()
+    )
+    category = "ARITHMETIC_ERROR" if operands_match else "WRONG_OPERANDS"
+    return category, expected_operands, generated_numbers
 
 
 @torch.no_grad()
@@ -220,6 +295,7 @@ def greedy_answer_evaluation(
     all_records = list(records)
     selected = all_records if limit is None else all_records[:limit]
     samples: list[dict[str, Any]] = []
+    taxonomy = {category: 0 for category in ANSWER_ERROR_CATEGORIES}
     for start in range(0, len(selected), batch_size):
         batch_records = selected[start : start + batch_size]
         prompts = [
@@ -272,6 +348,14 @@ def greedy_answer_evaluation(
             decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
             predicted = parse_answer(decoded)
             is_correct = predicted == int(record["answer"])
+            error_category, expected_operands, generated_numbers = classify_answer_error(
+                decoded,
+                record["calculation"],
+                predicted,
+                int(record["answer"]),
+            )
+            if error_category is not None:
+                taxonomy[error_category] += 1
             correct += int(is_correct)
             attempted += 1
             if len(samples) < sample_count:
@@ -283,6 +367,9 @@ def greedy_answer_evaluation(
                         "parsed_answer": predicted,
                         "gold_answer": int(record["answer"]),
                         "correct": is_correct,
+                        "error_category": error_category,
+                        "expected_operands": expected_operands,
+                        "generated_step_numbers": generated_numbers,
                         "generated_tokens": len(token_ids),
                     }
                 )
@@ -290,5 +377,6 @@ def greedy_answer_evaluation(
         "accuracy": correct / attempted if attempted else float("nan"),
         "count": attempted,
         "correct": correct,
+        "taxonomy": taxonomy,
         "samples": samples,
     }
