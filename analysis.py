@@ -22,6 +22,10 @@ REPORT_METRICS = (
     "answer_parse_fail_count",
     "answer_wrong_operands_count",
     "answer_arithmetic_error_count",
+    "answer_parse_fail_fraction",
+    "answer_wrong_operands_fraction",
+    "answer_arithmetic_error_fraction",
+    "train_val_lm_gap",
     "zone_f1",
     "probe_trunk_f1",
     "probe_branch_a_f1",
@@ -63,6 +67,21 @@ def _load_runs(runs_dir: Path) -> list[dict[str, Any]]:
     for summary_path in sorted(runs_dir.glob("*_s*/summary.json")):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         test = summary["test"]
+        answer_count = float(test.get("answer_eval_count") or 0.0)
+        selection = summary.get("selection") or {}
+        train_lm = selection.get("train_lm_loss")
+        val_lm = summary.get("best_val_lm", selection.get("lm_loss"))
+
+        def answer_fraction(field: str) -> float:
+            if answer_count <= 0:
+                return float("nan")
+            return float(test.get(field, 0.0)) / answer_count
+
+        train_val_lm_gap = (
+            float(val_lm) - float(train_lm)
+            if val_lm is not None and train_lm is not None
+            else float("nan")
+        )
         record: dict[str, Any] = {
             "arm": summary["arm"],
             "seed": summary["seed"],
@@ -77,6 +96,16 @@ def _load_runs(runs_dir: Path) -> list[dict[str, Any]]:
             "answer_arithmetic_error_count": test.get(
                 "answer_arithmetic_error_count", float("nan")
             ),
+            "answer_parse_fail_fraction": answer_fraction(
+                "answer_parse_fail_count"
+            ),
+            "answer_wrong_operands_fraction": answer_fraction(
+                "answer_wrong_operands_count"
+            ),
+            "answer_arithmetic_error_fraction": answer_fraction(
+                "answer_arithmetic_error_count"
+            ),
+            "train_val_lm_gap": train_val_lm_gap,
             "zone_f1": test.get("zone_f1", float("nan")),
             "gate_mean": test.get("gate_mean", float("nan")),
             "gate_std": test.get("gate_std", float("nan")),
@@ -149,6 +178,7 @@ def _write_table(
         "answer_parse_fail_count",
         "answer_wrong_operands_count",
         "answer_arithmetic_error_count",
+        "train_val_lm_gap",
         "zone_f1",
         "probe_trunk_f1",
         "probe_branch_a_f1",
@@ -164,6 +194,7 @@ def _write_table(
         "parse fail",
         "wrong operands",
         "arithmetic error",
+        "val - train LM",
         "zone F1",
         "probe trunk F1",
         "probe branch A F1",
@@ -198,6 +229,49 @@ def _write_table(
     (output_dir / "aggregate_table.md").write_text(table + "\n", encoding="utf-8")
     if csv_rows:
         with (output_dir / "aggregate_table.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(csv_rows[0]))
+            writer.writeheader()
+            writer.writerows(csv_rows)
+    return table
+
+
+def _write_error_taxonomy_table(
+    aggregate: dict[str, dict[str, tuple[float, float]]],
+    output_dir: Path,
+) -> str:
+    metrics = [
+        "answer_parse_fail_fraction",
+        "answer_wrong_operands_fraction",
+        "answer_arithmetic_error_fraction",
+    ]
+    headers = [
+        "arm",
+        "PARSE_FAIL fraction",
+        "WRONG_OPERANDS fraction",
+        "ARITHMETIC_ERROR fraction",
+    ]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "|---|---:|---:|---:|",
+    ]
+    csv_rows: list[dict[str, Any]] = []
+    for arm in ARM_SETTINGS:
+        if arm not in aggregate:
+            continue
+        values = [_format(aggregate[arm][metric]) for metric in metrics]
+        lines.append(f"| {arm} | " + " | ".join(values) + " |")
+        row: dict[str, Any] = {"arm": arm}
+        for metric in metrics:
+            row[f"{metric}_mean"], row[f"{metric}_std"] = aggregate[arm][metric]
+        csv_rows.append(row)
+    table = "\n".join(lines)
+    (output_dir / "error_taxonomy_table.md").write_text(
+        table + "\n", encoding="utf-8"
+    )
+    if csv_rows:
+        with (output_dir / "error_taxonomy_table.csv").open(
             "w", newline="", encoding="utf-8"
         ) as handle:
             writer = csv.DictWriter(handle, fieldnames=list(csv_rows[0]))
@@ -370,6 +444,7 @@ def run_analysis(
         )
     aggregate = _aggregate(records)
     table = _write_table(aggregate, output_path)
+    error_taxonomy_table = _write_error_taxonomy_table(aggregate, output_path)
     _bar_plot(
         aggregate,
         prefix="entropy_z",
@@ -388,6 +463,8 @@ def run_analysis(
     verdict = _verdict(aggregate)
     (output_path / "verdict.txt").write_text(verdict + "\n", encoding="utf-8")
     print(table)
+    print("\nAnswer error taxonomy (fractions of full test split):")
+    print(error_taxonomy_table)
     print("\n" + verdict)
     return output_path
 

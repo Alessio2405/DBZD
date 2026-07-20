@@ -92,6 +92,7 @@ def main() -> None:
         run_dir / "generations_best_final.jsonl",
         run_dir / "gate_per_zone.csv",
         run_root / "analysis" / "aggregate_table.csv",
+        run_root / "analysis" / "error_taxonomy_table.csv",
         run_root / "analysis" / "entropy_by_zone.png",
     ]
     missing = [path for path in required if not path.exists()]
@@ -122,6 +123,8 @@ def main() -> None:
         "answer_parse_fail_count",
         "answer_wrong_operands_count",
         "answer_arithmetic_error_count",
+        "alpha_lm_gradient",
+        "alpha_total_gradient",
     ):
         if field not in metrics_header:
             raise AssertionError(f"metrics.csv is missing {field}")

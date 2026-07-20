@@ -126,7 +126,7 @@ retain the full checkpoint. Each run also contains:
 - `metrics.csv` with train/eval curves, gate mean/std overall and per zone,
   gradient cosine, entropy overall and per zone, answer accuracy/count, the
   `PARSE_FAIL`/`WRONG_OPERANDS`/`ARITHMETIC_ERROR` counts, zone F1, train LM
-  beside validation LM, and learned alpha
+  beside validation LM, learned alpha, and the signed LM/total gradient on alpha
 - `checkpoint_best.pt` and `best_metrics.json` while a run is active
 - `generations_step_*.jsonl` plus `generations_best_final.jsonl` with every
   decoded output (512 intermediate, full test at the end), parsed/gold answers,
@@ -189,7 +189,9 @@ atomically. It refuses to alter a run if a file contains only displayed samples
 rather than the full expected 512/2000 records.
 
 Outputs under `runs/analysis/` include a mean ± standard-deviation table,
-entropy-by-zone and gate-by-zone plots, training curves, and `verdict.txt`.
+an explicit best-checkpoint validation-minus-train LM gap, a per-arm error
+taxonomy table expressed as fractions of the full test split, entropy-by-zone
+and gate-by-zone plots, training curves, and `verdict.txt`.
 The table marks baseline zone F1 and alpha as `—`: the zone head is deliberately
 untrained at λ=0 and the gate is frozen. Multitask alpha is likewise `—` because
 its identity gate is frozen; zone F1 remains meaningful for every λ>0 arm.

@@ -17,6 +17,7 @@ from datagen.tokenizer import load_tokenizer
 from dbzd.config import ExperimentConfig, save_config
 from dbzd.data import CausalLMCollator, JSONLTokenDataset
 from dbzd.diagnostics import (
+    alpha_gradient_diagnostics,
     evaluate_loader,
     gold_completion_token_budget,
     gradient_cosine,
@@ -205,6 +206,14 @@ def _run_evaluation(
         device=device,
         max_parameters=config.gradient_cosine_params,
         precision=precision,
+    )
+    metrics.update(
+        alpha_gradient_diagnostics(
+            model,
+            first_batch,
+            device=device,
+            precision=precision,
+        )
     )
     answer_result = greedy_answer_evaluation(
         model,
@@ -601,6 +610,12 @@ def run_training(
                     f"(n={int(eval_metrics['answer_eval_count'])}) "
                     f"alpha={eval_metrics['alpha']:.4f}"
                 )
+                if math.isfinite(float(eval_metrics["alpha_lm_gradient"])):
+                    print(
+                        "  alpha gradients: "
+                        f"lm={eval_metrics['alpha_lm_gradient']:+.3e} "
+                        f"total={eval_metrics['alpha_total_gradient']:+.3e}"
+                    )
                 print(
                     "  answer errors: "
                     f"PARSE_FAIL={int(eval_metrics['answer_parse_fail_count'])} "
@@ -750,6 +765,14 @@ def run_training(
         device=device,
         max_parameters=config.gradient_cosine_params,
         precision=precision,
+    )
+    val_metrics.update(
+        alpha_gradient_diagnostics(
+            model,
+            next(iter(val_loader)),
+            device=device,
+            precision=precision,
+        )
     )
     val_metrics.update(
         {

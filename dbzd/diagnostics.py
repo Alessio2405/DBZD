@@ -107,6 +107,57 @@ def gradient_cosine(
     return float(np.mean(cosines)) if cosines else float("nan")
 
 
+def alpha_gradient_diagnostics(
+    model: DBZDModel,
+    batch: dict[str, Any],
+    *,
+    device: torch.device,
+    precision: str = "fp32",
+) -> dict[str, float]:
+    if not model.fusion_enabled or not model.fusion.alpha.requires_grad:
+        return {
+            "alpha_lm_gradient": float("nan"),
+            "alpha_total_gradient": float("nan"),
+        }
+    model.zero_grad(set_to_none=True)
+    with autocast_context(device, precision):
+        output = model(
+            input_ids=batch["input_ids"][:1].to(device),
+            attention_mask=batch["attention_mask"][:1].to(device),
+            labels=batch["labels"][:1].to(device),
+            zone_labels=batch["zone_labels"][:1].to(device),
+        )
+    if output.lm_loss is None or output.loss is None:
+        return {
+            "alpha_lm_gradient": float("nan"),
+            "alpha_total_gradient": float("nan"),
+        }
+    lm_gradient = torch.autograd.grad(
+        output.lm_loss,
+        model.fusion.alpha,
+        retain_graph=True,
+        allow_unused=True,
+    )[0]
+    total_gradient = torch.autograd.grad(
+        output.loss,
+        model.fusion.alpha,
+        allow_unused=True,
+    )[0]
+    model.zero_grad(set_to_none=True)
+    return {
+        "alpha_lm_gradient": (
+            float(lm_gradient.detach().float().item())
+            if lm_gradient is not None
+            else 0.0
+        ),
+        "alpha_total_gradient": (
+            float(total_gradient.detach().float().item())
+            if total_gradient is not None
+            else 0.0
+        ),
+    }
+
+
 @torch.no_grad()
 def evaluate_loader(
     model: DBZDModel,

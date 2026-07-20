@@ -109,6 +109,8 @@ METRIC_FIELDS = [
     "answer_wrong_operands_count",
     "answer_arithmetic_error_count",
     "alpha",
+    "alpha_lm_gradient",
+    "alpha_total_gradient",
     "gate_mean",
     "gate_std",
     "entropy_mean",
