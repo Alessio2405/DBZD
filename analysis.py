@@ -44,7 +44,7 @@ METRIC_APPLICABILITY: dict[str, dict[str, bool]] = {
 }
 
 ARM_METRIC_NOTES = {
-    "baseline_matched": "zone F1 — (λ=0); alpha — (identity gate)",
+    "baseline_matched": "zone F1 — (lambda=0); alpha — (identity gate)",
     "multitask": "zone F1 meaningful; alpha — (identity gate)",
     "dbzd_full": "zone F1 and alpha meaningful",
     "dbzd_stopgrad": "zone F1 and alpha meaningful",
@@ -399,6 +399,23 @@ def _verdict(
         )
         return f"INCOMPLETE: three seeds per arm are required ({counts})."
 
+    required_finite_metrics = (
+        "probe_trunk_f1",
+        "probe_branch_a_f1",
+        "answer_accuracy",
+        "entropy_z6",
+    )
+    missing_metrics = [
+        f"{arm}.{metric}"
+        for arm in sorted(required)
+        for metric in required_finite_metrics
+        if not math.isfinite(aggregate[arm][metric][0])
+    ]
+    if missing_metrics:
+        return "INCOMPLETE: missing finite verdict metrics: " + ", ".join(
+            missing_metrics
+        )
+
     full = aggregate["dbzd_full"]
     baseline = aggregate["baseline_matched"]
     multitask = aggregate["multitask"]
@@ -424,7 +441,7 @@ def _verdict(
     return "\n".join(
         [
             f"PASS to Phase 1: {'YES' if pass_phase_1 else 'NO'}",
-            f"Null #2 confirmed (multitask ≈ full): {'YES' if null_2 else 'NO'}",
+            f"Null #2 confirmed (multitask ~ full): {'YES' if null_2 else 'NO'}",
             f"Coupled-gradient evidence: {'YES' if coupled else 'NO'}",
         ]
     )

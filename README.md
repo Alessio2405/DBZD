@@ -210,16 +210,19 @@ The verdict applies these pre-registered rules:
 2. Create a Kaggle Notebook, upload `kaggle/kaggle_runner.ipynb`, enable a
    T4/P100 accelerator and Internet, and select **Save Version** with background
    execution.
-3. Edit only the first notebook cell: set `REPO_URL` and your Kaggle Dataset
-   slug. The approved matrix already contains all four arms and seeds 42/43/44.
+3. Edit only the first notebook cell: set the prior `RUNS_INPUT_DIR` or
+   `RUNS_INPUT_ZIP` and your Kaggle Dataset slug. The checked-in recovery matrix
+   runs missing `multitask` seed 44 plus all six gate-active runs.
 4. For a private GitHub repository, add a Kaggle Secret named
    `GITHUB_TOKEN`. The notebook reads it without printing it.
 5. If resuming, attach the previous runs Dataset as notebook input and set
    `RUNS_INPUT_DIR` to its `/kaggle/input/.../runs` directory.
 6. Run the notebook. It clones the repo, installs requirements, restores prior
    runs, generates data if absent, resumes partial checkpoints, trains the
-   complete 12-run matrix, runs probes and analysis, then publishes `runs/` as
-   a Kaggle Dataset version and creates a ZIP fallback.
+   missing matrix, runs probes and analysis, then publishes only
+   `metrics.csv`, `summary.json`, and `probe_summary.json` plus aggregate
+   analysis as a Kaggle Dataset version. Model/checkpoint `.pt` files are not
+   included in the export.
 7. Download the resulting runs Dataset locally and execute
    `python analysis.py --runs-dir /path/to/downloaded/runs`.
 
@@ -232,18 +235,22 @@ this replacement and is the faster way to start a fresh session.
 
 ### Approved final run
 
-The checked-in notebook uses the complete matrix and the new data/schedule
-revision, so all older results are deliberately invalidated:
+The checked-in notebook preserves completed `phase0_final_r3` summaries and
+uses this exact recovery matrix:
 
 ```python
-ARMS = ["baseline_matched", "multitask", "dbzd_full", "dbzd_stopgrad"]
-SEEDS = [42, 43, 44]
+RUN_MATRIX = [
+    ("multitask", 44),
+    ("dbzd_full", 42), ("dbzd_full", 43), ("dbzd_full", 44),
+    ("dbzd_stopgrad", 42), ("dbzd_stopgrad", 43),
+    ("dbzd_stopgrad", 44),
+]
 EXPERIMENT_REVISION = "phase0_final_r3"
 DATAGEN_SCHEMA_VERSION = 3
 ```
 
-The notebook removes an older run directory only when its resolved revision is
-not `phase0_final_r3`; an interrupted current-revision run still resumes. A
+The notebook refuses to overwrite a run when its revision is not
+`phase0_final_r3`; an interrupted current-revision run still resumes. A
 single Kaggle session may be shorter than the full matrix. In that case, attach
 the latest runs Dataset and use the same matrix: completed runs are skipped and
 the interrupted checkpoint resumes. If you intentionally partition sessions,
@@ -261,6 +268,13 @@ SEEDS = [42, 43, 44]
 
 Repeat for `dbzd_full` and `dbzd_stopgrad`; the scientific config remains
 identical across all arms.
+
+Immediately after each `dbzd_full` run, `scripts/validate_alpha.py` prints the
+alpha/gradient trajectory and stops the notebook if `alpha_lm_gradient` is not
+finite or alpha never leaves its configured initial value. A metrics-only
+archive cannot reconstruct missing linear probes: `probe_summary.json` must be
+created before model checkpoints are discarded, or the pre-registered verdict
+will correctly remain `INCOMPLETE`.
 
 ### One-time Kaggle Dataset setup
 

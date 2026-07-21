@@ -5,7 +5,9 @@ import re
 
 from datagen.generator import (
     FAMILY_BUILDERS,
+    SECTION_TRANSITIONS,
     SPLIT_FAMILIES,
+    ZONE_MARKER_VARIANTS,
     compute_answer,
     generate_dataset,
     generate_examples,
@@ -36,6 +38,24 @@ def test_answers_are_programmatically_correct() -> None:
             match = re.search(r"The answer is (-?\d+)\.", example.raw_text)
             assert match is not None
             assert int(match.group(1)) == example.answer
+            assert 0 <= example.answer < 100
+            numeric_values: list[int] = []
+            for value in example.calculation.values():
+                if isinstance(value, int):
+                    numeric_values.append(value)
+                elif isinstance(value, list):
+                    numeric_values.extend(item for item in value if isinstance(item, int))
+            assert all(0 <= value < 100 for value in numeric_values)
+
+
+def test_zone_markers_have_nontrivial_variants_and_are_sampled() -> None:
+    assert all(len(set(variants)) >= 3 for variants in ZONE_MARKER_VARIANTS)
+    assert all(len(set(variants)) >= 3 for variants in SECTION_TRANSITIONS[1:])
+    observed = [set() for _ in ZONE_MARKER_VARIANTS]
+    for example in generate_examples("train", 256, seed=17):
+        for zone_id, marker in enumerate(example.section_markers):
+            observed[zone_id].add(marker)
+    assert all(len(markers) >= 3 for markers in observed)
 
 
 def test_template_families_are_disjoint() -> None:
@@ -46,6 +66,17 @@ def test_template_families_are_disjoint() -> None:
     assert len({id(FAMILY_BUILDERS[name]) for name in FAMILY_BUILDERS}) == len(
         FAMILY_BUILDERS
     )
+    assert len(SPLIT_FAMILIES["train"]) >= 24
+
+
+def test_tokenizer_round_trips_100_examples_losslessly() -> None:
+    tokenizer = SimpleTokenizer()
+    examples = generate_examples("train", 100, seed=23)
+    for example in examples:
+        record = tokenize_example(example, tokenizer, split="train")
+        content_tokens = record["tokens"][:-1]
+        assert tokenizer.decode(content_tokens) == example.raw_text
+        assert re.search(r"(?<=[A-Za-z])\d|\d(?=[A-Za-z])", example.raw_text) is None
 
 
 def test_tiny_dataset_writes_expected_contract(tmp_path) -> None:
@@ -58,6 +89,7 @@ def test_tiny_dataset_writes_expected_contract(tmp_path) -> None:
         seed=99,
     )
     assert sum(metadata["counts"].values()) == 20
+    assert metadata["tokenizer_roundtrip_examples"] == 20
     assert (tmp_path / "simple_tokenizer.json").exists()
     assert (tmp_path / "inspection_samples.txt").exists()
     for split, expected_count in metadata["counts"].items():
