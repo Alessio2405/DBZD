@@ -5,6 +5,7 @@ import csv
 import json
 import math
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -57,14 +58,70 @@ def _metric_is_meaningful(arm: str, metric: str) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Aggregate DBZD Phase 0 runs.")
-    parser.add_argument("--runs-dir", default="runs")
+    parser.add_argument(
+        "--runs-dir",
+        action="append",
+        default=None,
+        help="Run root to scan recursively; repeat for runs from multiple sessions.",
+    )
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--experiment-revision",
+        default=None,
+        help="Only aggregate completed runs from this experiment revision.",
+    )
     return parser
 
 
-def _load_runs(runs_dir: Path) -> list[dict[str, Any]]:
+def _normalise_run_roots(
+    runs_dirs: str | Path | Sequence[str | Path],
+) -> list[Path]:
+    if isinstance(runs_dirs, (str, Path)):
+        return [Path(runs_dirs)]
+    return [Path(path) for path in runs_dirs]
+
+
+def _candidate_score(summary_path: Path, summary: dict[str, Any]) -> tuple[int, ...]:
+    test = summary.get("test") or {}
+    return (
+        int(bool(summary.get("completed"))),
+        int((summary_path.parent / "probe_summary.json").exists()),
+        int((summary_path.parent / "metrics.csv").exists()),
+        int(test.get("answer_eval_count") or 0),
+        int(summary_path.stat().st_mtime_ns),
+    )
+
+
+def _load_runs(
+    runs_dirs: str | Path | Sequence[str | Path],
+    experiment_revision: str | None = None,
+) -> list[dict[str, Any]]:
+    selected: dict[tuple[str, int, str | None], tuple[Path, dict[str, Any]]] = {}
+    for runs_dir in _normalise_run_roots(runs_dirs):
+        if not runs_dir.exists():
+            continue
+        for summary_path in sorted(runs_dir.rglob("summary.json")):
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            if not summary.get("completed"):
+                continue
+            arm = summary.get("arm")
+            seed = summary.get("seed")
+            if arm not in ARM_SETTINGS or seed is None:
+                continue
+            revision = (summary.get("config") or {}).get("experiment_revision")
+            if experiment_revision is not None and revision != experiment_revision:
+                continue
+            key = (str(arm), int(seed), revision)
+            previous = selected.get(key)
+            if previous is None or _candidate_score(
+                summary_path, summary
+            ) > _candidate_score(*previous):
+                selected[key] = (summary_path, summary)
+
     records: list[dict[str, Any]] = []
-    for summary_path in sorted(runs_dir.glob("*_s*/summary.json")):
+    for summary_path, summary in sorted(
+        selected.values(), key=lambda item: (item[1]["arm"], item[1]["seed"])
+    ):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         test = summary["test"]
         answer_count = float(test.get("answer_eval_count") or 0.0)
@@ -85,6 +142,9 @@ def _load_runs(runs_dir: Path) -> list[dict[str, Any]]:
         record: dict[str, Any] = {
             "arm": summary["arm"],
             "seed": summary["seed"],
+            "experiment_revision": (summary.get("config") or {}).get(
+                "experiment_revision"
+            ),
             "run_dir": summary_path.parent,
             "answer_accuracy": test.get("answer_accuracy", float("nan")),
             "answer_parse_fail_count": test.get(
@@ -146,12 +206,14 @@ def _aggregate(
         for metric in REPORT_METRICS:
             if not _metric_is_meaningful(arm, metric):
                 result[arm][metric] = (float("nan"), float("nan"))
+                result[arm][f"_n_{metric}"] = (0.0, 0.0)
                 continue
             values = np.asarray(
                 [float(record.get(metric, float("nan"))) for record in arm_records],
                 dtype=float,
             )
             finite = values[np.isfinite(values)]
+            result[arm][f"_n_{metric}"] = (float(len(finite)), 0.0)
             if not len(finite):
                 result[arm][metric] = (float("nan"), float("nan"))
             else:
@@ -162,11 +224,20 @@ def _aggregate(
     return result
 
 
-def _format(mean_std: tuple[float, float]) -> str:
+def _format(
+    mean_std: tuple[float, float],
+    finite_n: int | None = None,
+    total_n: int | None = None,
+) -> str:
     mean, std = mean_std
     if not math.isfinite(mean):
         return "—"
-    return f"{mean:.4f} +/- {std:.4f}"
+    suffix = (
+        f" (n={finite_n}/{total_n})"
+        if finite_n is not None and total_n is not None and finite_n < total_n
+        else ""
+    )
+    return f"{mean:.4f} +/- {std:.4f}{suffix}"
 
 
 def _write_table(
@@ -213,10 +284,15 @@ def _write_table(
     for arm in ARM_SETTINGS:
         if arm not in aggregate:
             continue
+        total_n = int(aggregate[arm]["_n"][0])
         values = [
             "—"
             if not _metric_is_meaningful(arm, metric)
-            else _format(aggregate[arm][metric])
+            else _format(
+                aggregate[arm][metric],
+                int(aggregate[arm][f"_n_{metric}"][0]),
+                total_n,
+            )
             for metric in compact_metrics
         ]
         note = ARM_METRIC_NOTES[arm]
@@ -224,6 +300,7 @@ def _write_table(
         row: dict[str, Any] = {"arm": arm, "metric_applicability": note}
         for metric in REPORT_METRICS:
             row[f"{metric}_mean"], row[f"{metric}_std"] = aggregate[arm][metric]
+            row[f"{metric}_n"] = int(aggregate[arm][f"_n_{metric}"][0])
         csv_rows.append(row)
     table = "\n".join(lines)
     (output_dir / "aggregate_table.md").write_text(table + "\n", encoding="utf-8")
@@ -260,11 +337,20 @@ def _write_error_taxonomy_table(
     for arm in ARM_SETTINGS:
         if arm not in aggregate:
             continue
-        values = [_format(aggregate[arm][metric]) for metric in metrics]
+        total_n = int(aggregate[arm]["_n"][0])
+        values = [
+            _format(
+                aggregate[arm][metric],
+                int(aggregate[arm][f"_n_{metric}"][0]),
+                total_n,
+            )
+            for metric in metrics
+        ]
         lines.append(f"| {arm} | " + " | ".join(values) + " |")
         row: dict[str, Any] = {"arm": arm}
         for metric in metrics:
             row[f"{metric}_mean"], row[f"{metric}_std"] = aggregate[arm][metric]
+            row[f"{metric}_n"] = int(aggregate[arm][f"_n_{metric}"][0])
         csv_rows.append(row)
     table = "\n".join(lines)
     (output_dir / "error_taxonomy_table.md").write_text(
@@ -406,10 +492,11 @@ def _verdict(
         "entropy_z6",
     )
     missing_metrics = [
-        f"{arm}.{metric}"
+        f"{arm}.{metric} (n={int(aggregate[arm]['_n_' + metric][0])}/3)"
         for arm in sorted(required)
         for metric in required_finite_metrics
         if not math.isfinite(aggregate[arm][metric][0])
+        or int(aggregate[arm][f"_n_{metric}"][0]) < 3
     ]
     if missing_metrics:
         return "INCOMPLETE: missing finite verdict metrics: " + ", ".join(
@@ -448,17 +535,32 @@ def _verdict(
 
 
 def run_analysis(
-    runs_dir: str | Path = "runs",
+    runs_dir: str | Path | Sequence[str | Path] = "runs",
     output_dir: str | Path | None = None,
+    experiment_revision: str | None = None,
 ) -> Path:
-    runs_path = Path(runs_dir)
+    runs_paths = _normalise_run_roots(runs_dir)
+    runs_path = runs_paths[0]
     output_path = Path(output_dir) if output_dir else runs_path / "analysis"
     output_path.mkdir(parents=True, exist_ok=True)
-    records = _load_runs(runs_path)
+    records = _load_runs(runs_paths, experiment_revision=experiment_revision)
     if not records:
         raise FileNotFoundError(
-            f"No immediate *_s*/summary.json run directories found in {runs_path}"
+            f"No completed runs found recursively in {runs_paths}"
+            + (
+                f" for revision {experiment_revision!r}"
+                if experiment_revision is not None
+                else ""
+            )
         )
+    revision_label = experiment_revision or "all revisions"
+    print(
+        f"Loaded {len(records)} unique completed runs ({revision_label}): "
+        + ", ".join(
+            f"{arm}={sum(record['arm'] == arm for record in records)}"
+            for arm in ARM_SETTINGS
+        )
+    )
     aggregate = _aggregate(records)
     table = _write_table(aggregate, output_path)
     error_taxonomy_table = _write_error_taxonomy_table(aggregate, output_path)
@@ -488,7 +590,11 @@ def run_analysis(
 
 def main() -> None:
     args = build_parser().parse_args()
-    run_analysis(args.runs_dir, args.output_dir)
+    run_analysis(
+        args.runs_dir or ["runs"],
+        args.output_dir,
+        experiment_revision=args.experiment_revision,
+    )
 
 
 if __name__ == "__main__":

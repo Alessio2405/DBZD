@@ -174,7 +174,7 @@ for d in runs/*_s*; do python probe.py --run-dir "$d"; done
 Then aggregate:
 
 ```bash
-python analysis.py --runs-dir runs
+python analysis.py --runs-dir runs --experiment-revision phase0_final_r3
 ```
 
 To reclassify already-saved complete generation files after parser changes,
@@ -210,21 +210,21 @@ The verdict applies these pre-registered rules:
 2. Create a Kaggle Notebook, upload `kaggle/kaggle_runner.ipynb`, enable a
    T4/P100 accelerator and Internet, and select **Save Version** with background
    execution.
-3. Edit only the first notebook cell: set the prior `RUNS_INPUT_DIR` or
-   `RUNS_INPUT_ZIP` and your Kaggle Dataset slug. The checked-in recovery matrix
-   runs missing `multitask` seed 44 plus all six gate-active runs.
-4. For a private GitHub repository, add a Kaggle Secret named
-   `GITHUB_TOKEN`. The notebook reads it without printing it.
-5. If resuming, attach the previous runs Dataset as notebook input and set
-   `RUNS_INPUT_DIR` to its `/kaggle/input/.../runs` directory.
-6. Run the notebook. It clones the repo, installs requirements, restores prior
-   runs, generates data if absent, resumes partial checkpoints, trains the
-   missing matrix, runs probes and analysis, then publishes only
+3. Edit only the first notebook cell and set `BATCH_ID`. The public repository
+   requires no token or Secret.
+4. For Batch 1, attach every prior result archive as notebook input. The runner
+   discovers `runs.zip`/`dbzd-runs.zip` inputs automatically, recursively merges
+   all completed `phase0_final_r3` runs and deduplicates arm/seed pairs. Explicit
+   paths can still be supplied through `RUNS_INPUT_ZIPS` when needed.
+5. Run the notebook. It clones the repo, installs requirements, restores prior
+   completed runs, generates data if absent, trains the
+   selected batch, runs probes and analysis, then packages only
    `metrics.csv`, `summary.json`, and `probe_summary.json` plus aggregate
-   analysis as a Kaggle Dataset version. Model/checkpoint `.pt` files are not
+   analysis into `/kaggle/working/dbzd-runs.zip`. Model/checkpoint `.pt` files are not
    included in the export.
-7. Download the resulting runs Dataset locally and execute
-   `python analysis.py --runs-dir /path/to/downloaded/runs`.
+6. Download the consolidated `dbzd-runs.zip` from the completed Version output
+   and attach it for the next `BATCH_ID`. After Batch 2, run
+   `python analysis.py --runs-dir /path/to/downloaded/runs --experiment-revision phase0_final_r3`.
 
 The runner validates the assigned GPU before training. Current Kaggle images
 can pair a P100 (`sm_60`) with a CUDA 12.8 PyTorch wheel that only contains
@@ -235,68 +235,32 @@ this replacement and is the faster way to start a fresh session.
 
 ### Approved final run
 
-The checked-in notebook preserves completed `phase0_final_r3` summaries and
-uses this exact recovery matrix:
+The checked-in notebook preserves the eight completed `phase0_final_r3` runs
+and splits the four-run recovery across two Kaggle Versions, each safely below
+the 12-hour limit:
 
 ```python
-RUN_MATRIX = [
-    ("multitask", 44),
-    ("dbzd_full", 42), ("dbzd_full", 43), ("dbzd_full", 44),
-    ("dbzd_stopgrad", 42), ("dbzd_stopgrad", 43),
-    ("dbzd_stopgrad", 44),
-]
+RUN_BATCHES = {
+    1: [("dbzd_full", 44), ("dbzd_stopgrad", 42)],
+    2: [("dbzd_stopgrad", 43), ("dbzd_stopgrad", 44)],
+}
+BATCH_ID = 1  # then 2
+RUN_MATRIX = RUN_BATCHES[BATCH_ID]
 EXPERIMENT_REVISION = "phase0_final_r3"
 DATAGEN_SCHEMA_VERSION = 3
 ```
 
 The notebook refuses to overwrite a run when its revision is not
-`phase0_final_r3`; an interrupted current-revision run still resumes. A
-single Kaggle session may be shorter than the full matrix. In that case, attach
-the latest runs Dataset and use the same matrix: completed runs are skipped and
-the interrupted checkpoint resumes. If you intentionally partition sessions,
-change only `ARMS` while retaining the same config and seed list, for example:
+`phase0_final_r3`. After a successful batch, download its checkpoint-free,
+consolidated `dbzd-runs.zip` and attach it to the next Version. Completed
+summaries are skipped automatically. No GitHub or Kaggle API token is used.
 
-```python
-# Session 1
-ARMS = ["baseline_matched"]
-SEEDS = [42, 43, 44]
-
-# Session 2
-ARMS = ["multitask"]
-SEEDS = [42, 43, 44]
-```
-
-Repeat for `dbzd_full` and `dbzd_stopgrad`; the scientific config remains
-identical across all arms.
-
-Immediately after each `dbzd_full` run, `scripts/validate_alpha.py` prints the
-alpha/gradient trajectory and stops the notebook if `alpha_lm_gradient` is not
-finite or alpha never leaves its configured initial value. A metrics-only
+Immediately after each `dbzd_full` run, the notebook prints the alpha/gradient
+trajectory and stops if `alpha_lm_gradient` is not finite or alpha never leaves
+its configured initial value. A metrics-only
 archive cannot reconstruct missing linear probes: `probe_summary.json` must be
 created before model checkpoints are discarded, or the pre-registered verdict
 will correctly remain `INCOMPLETE`.
-
-### One-time Kaggle Dataset setup
-
-Install and authenticate the Kaggle CLI locally, then create the persistent
-results Dataset once:
-
-```bash
-mkdir dbzd-runs-dataset
-kaggle datasets init -p dbzd-runs-dataset
-```
-
-Edit `dbzd-runs-dataset/dataset-metadata.json` so its `id` is
-`YOUR_USERNAME/dbzd-phase0-runs`, then:
-
-```bash
-kaggle datasets create -p dbzd-runs-dataset
-```
-
-Set the same slug in the notebook's `KAGGLE_DATASET_SLUG`. At the end of each
-session the notebook runs `kaggle datasets version`, so the next notebook can
-attach that version and resume. Kaggle API credentials must be available to the
-notebook; use Kaggle Secrets rather than embedding credentials in the file.
 
 ## Implementation notes
 
