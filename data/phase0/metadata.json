@@ -1,0 +1,108 @@
+{
+  "counts": {
+    "test": 2000,
+    "train": 40000,
+    "val": 2000
+  },
+  "generator_schema_version": 3,
+  "seed": 1234,
+  "split_families": {
+    "test": [
+      "carton_total",
+      "token_balance"
+    ],
+    "train": [
+      "counter_sum",
+      "tray_sum",
+      "shelf_remainder",
+      "box_flow",
+      "equal_groups",
+      "pack_plus_loose",
+      "collection_flow",
+      "row_product",
+      "bead_bowls",
+      "coin_purses",
+      "fruit_baskets",
+      "route_segments",
+      "plant_remainder",
+      "snack_remainder",
+      "bus_flow",
+      "tank_flow",
+      "team_groups",
+      "stamp_sheets",
+      "bundle_spares",
+      "case_samples",
+      "score_flow",
+      "inventory_flow",
+      "tile_array",
+      "packet_extras"
+    ],
+    "val": [
+      "jar_sum",
+      "ticket_remainder"
+    ]
+  },
+  "tokenizer": {
+    "bos_token_id": 0,
+    "eos_token_id": 0,
+    "name": "HuggingFaceTB/SmolLM-135M",
+    "pad_token_id": 0,
+    "vocab_size": 49152
+  },
+  "tokenizer_roundtrip_examples": 100,
+  "zone_marker_variants": [
+    [
+      "CONTEXT:",
+      "SETTING:",
+      "BACKGROUND:"
+    ],
+    [
+      "PROBLEM:",
+      "TASK:",
+      "QUESTION:"
+    ],
+    [
+      "CONSTRAINT:",
+      "RULES:",
+      "REQUIREMENTS:"
+    ],
+    [
+      "DATA:",
+      "VALUES:",
+      "GIVEN:"
+    ],
+    [
+      "REASONING:",
+      "WORK:",
+      "SOLUTION STEPS:"
+    ],
+    [
+      "CONCLUSION:",
+      "RESULT:",
+      "INTERMEDIATE RESULT:"
+    ],
+    [
+      "FINAL:",
+      "ANSWER:",
+      "FINAL RESPONSE:"
+    ]
+  ],
+  "zone_markers": [
+    "CONTEXT:",
+    "PROBLEM:",
+    "CONSTRAINT:",
+    "DATA:",
+    "REASONING:",
+    "CONCLUSION:",
+    "FINAL:"
+  ],
+  "zones": [
+    "context",
+    "problem",
+    "constraint",
+    "data",
+    "reasoning",
+    "intermediate_conclusion",
+    "final_answer"
+  ]
+}
